@@ -1,5 +1,6 @@
 """
 チェック対象ドキュメントから検証可能なアトミックなクレームを抽出する。
+ドキュメントをチャンク分割して全文をカバーする。
 """
 from __future__ import annotations
 import json
@@ -15,7 +16,7 @@ _PROMPT_TEMPLATE = """\
 - 数値・固有名詞・人名・組織名・日時・金額を含むクレームを優先する
 - 意見・推測・感情表現は除外する（「〜と思われる」「〜かもしれない」など）
 - クレームは JSON 配列形式で出力すること（前置き・説明・他のテキストは一切出力しない）
-- 必ず文書の内容だけを元にすること（例を参考にしてはならない）
+- 必ず文書の内容だけを元にすること
 
 ## 出力形式（JSONのみ）
 ["クレーム1", "クレーム2", ...]
@@ -24,22 +25,54 @@ _PROMPT_TEMPLATE = """\
 {document}
 """
 
+# 1チャンクあたりの文字数（num_ctx=8192 に収まる範囲）
+_CHUNK_SIZE = 4000
+
 
 def extract(document: str, max_claims: int = 30) -> list[str]:
     """
     document からアトミックなクレームのリストを返す。
-    LLM が JSON を返せなかった場合は行ベースでパースする。
+    長いドキュメントはチャンク分割して全文をカバーする。
     """
-    prompt = _PROMPT_TEMPLATE.format(document=document[:6000])
-    raw = llm.call(prompt, num_ctx=8192)
+    chunks = _split_chunks(document, _CHUNK_SIZE)
+    seen: set[str] = set()
+    all_claims: list[str] = []
 
-    # JSON 配列を抽出
-    claims = _parse_json_array(raw)
-    if not claims:
-        # フォールバック: 行ベースパース
-        claims = _parse_lines(raw)
+    for i, chunk in enumerate(chunks, 1):
+        if len(all_claims) >= max_claims:
+            break
+        print(f"  [claim] チャンク {i}/{len(chunks)} を処理中...", flush=True)
+        prompt = _PROMPT_TEMPLATE.format(document=chunk)
+        raw = llm.call(prompt, num_ctx=8192)
 
-    return claims[:max_claims]
+        claims = _parse_json_array(raw)
+        if not claims:
+            claims = _parse_lines(raw)
+
+        for c in claims:
+            if c not in seen:
+                seen.add(c)
+                all_claims.append(c)
+
+    return all_claims[:max_claims]
+
+
+def _split_chunks(text: str, size: int) -> list[str]:
+    """文字数ベースでテキストをオーバーラップなしに分割する。"""
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + size
+        # 文末（。！？\n）で区切る
+        if end < len(text):
+            for sep in ("。\n", "。", "\n\n", "\n"):
+                pos = text.rfind(sep, start, end)
+                if pos > start:
+                    end = pos + len(sep)
+                    break
+        chunks.append(text[start:end])
+        start = end
+    return chunks
 
 
 def _parse_json_array(text: str) -> list[str]:

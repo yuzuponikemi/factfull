@@ -11,7 +11,7 @@ import urllib.request
 
 
 BACKEND = os.environ.get("FACTFULL_LLM_BACKEND", "ollama")
-OLLAMA_URL = os.environ.get("FACTFULL_OLLAMA_URL", "http://localhost:11434/api/generate")
+OLLAMA_URL = os.environ.get("FACTFULL_OLLAMA_URL", "http://localhost:11435/api/generate")
 OLLAMA_MODEL = os.environ.get("FACTFULL_OLLAMA_MODEL", "glm-4.7-flash:latest")
 ANTHROPIC_MODEL = os.environ.get("FACTFULL_ANTHROPIC_MODEL", "claude-sonnet-4-6")
 
