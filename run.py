@@ -39,7 +39,7 @@ def collect_truth_paths(sources: list[str]) -> list[Path]:
         elif p.is_file():
             paths.append(p)
         else:
-            print(f"[warn] {src} が見つかりません", file=sys.stderr)
+            print(f"[warn] {src} が見つかりません", file=sys.stderr, flush=True)
     return paths
 
 
@@ -55,33 +55,33 @@ def main() -> None:
     # 1. Truth ソースをインデックス化
     truth_paths = collect_truth_paths(args.truth)
     if not truth_paths:
-        print("[error] Truth ソースが見つかりません", file=sys.stderr)
+        print("[error] Truth ソースが見つかりません", file=sys.stderr, flush=True)
         sys.exit(1)
-    print(f"[1/4] Truth ソース: {len(truth_paths)} ファイル → インデックス構築中...", file=sys.stderr)
+    print(f"[1/4] Truth ソース: {len(truth_paths)} ファイル → インデックス構築中...", file=sys.stderr, flush=True)
     bm25, chunks = build_index(truth_paths)
-    print(f"      チャンク数: {len(chunks)}", file=sys.stderr)
+    print(f"      チャンク数: {len(chunks)}", file=sys.stderr, flush=True)
 
     # 2. チェック対象を読み込む
     target_path = Path(args.target)
     target_text = target_path.read_text(encoding="utf-8")
 
     # 3. クレーム抽出
-    print(f"[2/4] クレーム抽出中...", file=sys.stderr)
+    print(f"[2/4] クレーム抽出中...", file=sys.stderr, flush=True)
     claims = extract(target_text, max_claims=args.max_claims)
-    print(f"      抽出クレーム数: {len(claims)}", file=sys.stderr)
+    print(f"      抽出クレーム数: {len(claims)}", file=sys.stderr, flush=True)
 
     # 4. クレームごとに検証
-    print(f"[3/4] {len(claims)} クレームを検証中...", file=sys.stderr)
+    print(f"[3/4] {len(claims)} クレームを検証中...", file=sys.stderr, flush=True)
     results = []
     for i, claim in enumerate(claims, 1):
-        print(f"      {i}/{len(claims)}: {claim[:60]}...", file=sys.stderr, end="\r")
+        print(f"      {i}/{len(claims)}: {claim[:60]}...", file=sys.stderr, flush=True)
         evidence = retrieve(claim, bm25, chunks, top_k=args.top_k)
         result = verify(claim, evidence)
         results.append(result)
-    print("", file=sys.stderr)
+    print("", file=sys.stderr, flush=True)
 
     # 5. レポート生成
-    print("[4/4] レポート生成中...", file=sys.stderr)
+    print("[4/4] レポート生成中...", file=sys.stderr, flush=True)
     report = generate_report(
         results,
         target_name=target_path.name,
@@ -90,7 +90,7 @@ def main() -> None:
 
     if args.output:
         Path(args.output).write_text(report, encoding="utf-8")
-        print(f"[done] レポートを保存しました: {args.output}", file=sys.stderr)
+        print(f"[done] レポートを保存しました: {args.output}", file=sys.stderr, flush=True)
     else:
         print(report)
 

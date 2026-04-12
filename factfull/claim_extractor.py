@@ -12,12 +12,13 @@ _PROMPT_TEMPLATE = """\
 
 ## 抽出ルール
 - 各クレームは1文で完結すること
-- 数値・固有名詞・人名・組織名・日時を含むクレームを優先する
+- 数値・固有名詞・人名・組織名・日時・金額を含むクレームを優先する
 - 意見・推測・感情表現は除外する（「〜と思われる」「〜かもしれない」など）
-- クレームは JSON 配列形式で出力すること（他のテキストは出力しない）
+- クレームは JSON 配列形式で出力すること（前置き・説明・他のテキストは一切出力しない）
+- 必ず文書の内容だけを元にすること（例を参考にしてはならない）
 
-## 出力例
-["Dario AmodeiはAnthropicのCEOである", "Claude 3のリリースは2024年3月だった"]
+## 出力形式（JSONのみ）
+["クレーム1", "クレーム2", ...]
 
 ## 文書
 {document}
@@ -29,8 +30,8 @@ def extract(document: str, max_claims: int = 30) -> list[str]:
     document からアトミックなクレームのリストを返す。
     LLM が JSON を返せなかった場合は行ベースでパースする。
     """
-    prompt = _PROMPT_TEMPLATE.format(document=document[:12000])
-    raw = llm.call(prompt, num_ctx=16384)
+    prompt = _PROMPT_TEMPLATE.format(document=document[:6000])
+    raw = llm.call(prompt, num_ctx=8192)
 
     # JSON 配列を抽出
     claims = _parse_json_array(raw)
@@ -54,10 +55,15 @@ def _parse_json_array(text: str) -> list[str]:
     return []
 
 
+_META_PATTERNS = re.compile(
+    r"^(以下[はに]|これら[はの]|上記[はの]|抽出しました|クレームを抽出|ご確認|注意|なお、|※)"
+)
+
+
 def _parse_lines(text: str) -> list[str]:
     claims = []
     for line in text.splitlines():
         line = line.strip().lstrip("0123456789.-・•* ")
-        if len(line) > 10:
+        if len(line) > 10 and not _META_PATTERNS.match(line):
             claims.append(line)
     return claims
