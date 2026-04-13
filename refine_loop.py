@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-refine_loop.py — 自己改善ループ CLI
-=====================================
-記事に対してファクトチェック → 修正 を繰り返し、
-スコアが閾値以上になるまで自動で改善する。
+refine_loop.py — ファクトチェック自己改善ループ CLI
+====================================================
+パイプライン:
+  1. ファクトチェック（claim 抽出 → BM25 検索 → LLM 検証）
+  2. スコア < 閾値なら外科的修正 → 1 に戻る
+  3. スコア ≥ 閾値で確定 → --editorial なら編集後記を追加
 
 使い方:
   python refine_loop.py \\
@@ -11,9 +13,7 @@ refine_loop.py — 自己改善ループ CLI
     --target <summary_ja.md> \\
     [--threshold 95] \\
     [--max-iter 5] \\
-    [--top-k 5] \\
-    [--max-claims 30] \\
-    [--output-dir <dir>]
+    [--editorial]          # ← 合格後に編集後記を自動追加
 
 オプション:
   --truth        Truth ソース（ファイル or ディレクトリ、複数指定可）
@@ -24,6 +24,7 @@ refine_loop.py — 自己改善ループ CLI
   --max-claims   抽出するクレームの最大数（default: 30）
   --output-dir   レポート・中間ファイルの保存先（省略時は --target と同じディレクトリ）
   --backend      ollama | anthropic（default: 環境変数 FACTFULL_LLM_BACKEND）
+  --editorial    ループ完了後に編集後記（AI 考察）を末尾に追加する
 """
 from __future__ import annotations
 import argparse
@@ -37,6 +38,7 @@ from factfull.retriever import retrieve
 from factfull.verifier import verify
 from factfull.reporter import generate_report, compute_score
 from factfull.corrector import correct
+from factfull.editorial import append_editorial_note
 
 SUPPORTED_SUFFIXES = {".txt", ".md", ".rst"}
 
@@ -96,6 +98,8 @@ def main() -> None:
                         help="レポート・中間ファイルの保存先")
     parser.add_argument("--backend", default=None,
                         help="ollama | anthropic (default: FACTFULL_LLM_BACKEND 環境変数)")
+    parser.add_argument("--editorial", action="store_true",
+                        help="ループ完了後に編集後記（AI 考察）を末尾に追加する")
     args = parser.parse_args()
 
     # バックエンド設定
@@ -196,6 +200,11 @@ def main() -> None:
 
         document = corrected
 
+    # ── 編集後記の追加（--editorial フラグがある場合）
+    if args.editorial:
+        _print_header("編集後記を生成中")
+        document = append_editorial_note(document)
+
     # ── 最終版を target に上書き保存
     target_path.write_text(document, encoding="utf-8")
     print(f"\n💾 最終版を保存: {target_path}", flush=True)
@@ -209,6 +218,8 @@ def main() -> None:
     else:
         print("💡 スコアが目標未達です。プロンプトや --max-iter を見直してください。",
               flush=True)
+    if args.editorial:
+        print("📝 編集後記を追加済み", flush=True)
 
 
 def _print_header(text: str) -> None:
