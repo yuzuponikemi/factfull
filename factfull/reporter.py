@@ -63,12 +63,17 @@ def generate_report(
     return "\n".join(lines)
 
 
-def _compute_score(results: list[VerificationResult]) -> float:
+def compute_score(results: list[VerificationResult]) -> float:
+    """スコアを 0–100 で返す（公開 API）。"""
     verifiable = [r for r in results if VERDICT_SCORE[r.verdict] is not None]
     if not verifiable:
         return 0.0
     total = sum(VERDICT_SCORE[r.verdict] for r in verifiable)  # type: ignore
     return (total / len(verifiable)) * 100
+
+
+# 後方互換のためのエイリアス
+_compute_score = compute_score
 
 
 def _count_verdicts(results: list[VerificationResult]) -> dict[Verdict, int]:
