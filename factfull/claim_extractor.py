@@ -28,12 +28,36 @@ _PROMPT_TEMPLATE = """\
 # 1チャンクあたりの文字数（num_ctx=8192 に収まる範囲）
 _CHUNK_SIZE = 4000
 
+# ファクトチェック対象外のセクション見出しキーワード
+# （AI の考察・意見・メタ情報など、トランスクリプトで検証できないもの）
+_SKIP_SECTION_KEYWORDS = frozenset({"編集後記", "キーワード", "動画"})
+
+
+def _strip_non_factual_sections(document: str) -> str:
+    """
+    ## 編集後記 など事実検証対象外のセクションを除去してから返す。
+    見出し行を検出し、該当セクションの本文ごとスキップする。
+    """
+    lines = document.splitlines(keepends=True)
+    result: list[str] = []
+    skipping = False
+    for line in lines:
+        m = re.match(r'^#{1,3} (.+)$', line.rstrip())
+        if m:
+            section_title = m.group(1)
+            skipping = any(kw in section_title for kw in _SKIP_SECTION_KEYWORDS)
+        if not skipping:
+            result.append(line)
+    return "".join(result)
+
 
 def extract(document: str, max_claims: int = 30) -> list[str]:
     """
     document からアトミックなクレームのリストを返す。
     長いドキュメントはチャンク分割して全文をカバーする。
+    編集後記など意見・考察セクションは事前に除外する。
     """
+    document = _strip_non_factual_sections(document)
     chunks = _split_chunks(document, _CHUNK_SIZE)
     seen: set[str] = set()
     all_claims: list[str] = []

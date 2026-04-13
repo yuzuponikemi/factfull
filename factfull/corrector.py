@@ -118,9 +118,10 @@ def _split_sections(text: str) -> list[tuple[str, str]]:
 
 
 # 修正対象から除外するセクションの見出しキーワード
+# 編集後記は AI の解釈・意見なので事実修正の対象外
 _SKIP_SECTION_KEYWORDS = frozenset({
     "動画", "キーワード", "チャンネル", "YouTube",
-    "再生時間", "外部で開く",
+    "再生時間", "外部で開く", "編集後記",
 })
 
 
