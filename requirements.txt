@@ -1,1 +1,2 @@
 rank-bm25>=0.2.2
+youtube-transcript-api>=0.6
