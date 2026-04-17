@@ -109,18 +109,24 @@ class PodcastArchiver:
 
     def _ollama(self, prompt: str, num_ctx: int = 8192, model: str = None,
                 per_request_timeout: int = 600, max_retries: int = 6,
-                retry_wait: int = 45) -> str:
+                retry_wait: int = 45, num_predict: int = None,
+                repeat_penalty: float = None) -> str:
         """
         Ollama API を呼び出す。タイムアウト時は retry_wait 秒待ってリトライする。
         nanoclaw などの並行ジョブに割り込まれても自動回復できる。
         streaming モードで接続を維持するためプロキシ (OLLAMA_URL) を常に使用する。
         """
         url = self.OLLAMA_URL
+        options: dict = {"temperature": 0.3, "num_ctx": num_ctx}
+        if num_predict is not None:
+            options["num_predict"] = num_predict
+        if repeat_penalty is not None:
+            options["repeat_penalty"] = repeat_penalty
         payload = json.dumps({
             "model": model or self.analyze_model,
             "prompt": prompt,
             "stream": True,
-            "options": {"temperature": 0.3, "num_ctx": num_ctx},
+            "options": options,
         }).encode("utf-8")
 
         last_err = None
@@ -587,6 +593,48 @@ class PodcastArchiver:
 """
         return self._ollama(prompt, num_ctx=32768, per_request_timeout=1800)
 
+    def _generate_questions_from_ronten(self, ronten: str, n: int = 2) -> str:
+        """Pass 2d: 論点セクションから哲学的な問いを n 問生成する"""
+        prompt = f"""あなたは「SoryuNews」というブログの編集者です。
+
+以下はポッドキャスト記事の論点セクションです。
+この論点が提起するが答えていない「哲学的な問い」を{n}つ生成してください。
+
+## 問いの条件
+
+- **論点の具体的な主張・発言・数値から直接引き出すこと**（「AIは安全か」のような汎用的な問いは禁止）
+- 「この主張が正しいとすれば、なぜ〇〇なのか」「この構造では△△はどうなるか」という形式を意識する
+- 答えを示唆しない。問いとして開いたままにする
+- 各問いは **太字のタイトル（10〜20字）** + 本文（2〜3文）で構成する
+- 本文は問いで終わること（「〜か。」「〜のか。」）
+
+## 出力フォーマット（この形式を厳守）
+
+**問いのタイトル1**
+本文の説明文。問いで終わる文。
+
+**問いのタイトル2**
+本文の説明文。問いで終わる文。
+
+## 禁止事項
+- 見出し（##）は使わない
+- 番号付きリストは使わない
+- 前置き・後書きは一切出力しない
+- 論点に書いてある内容をそのまま繰り返さない
+
+---
+
+論点:
+{ronten}
+"""
+        return self._ollama(
+            prompt,
+            num_ctx=16384,
+            num_predict=2048,
+            repeat_penalty=1.1,
+            per_request_timeout=600,
+        )
+
     # ------------------------------------------------------------------ #
     #  Step 4: Summary generation (Map-Reduce 3-phase Pass 2)
     # ------------------------------------------------------------------ #
@@ -645,6 +693,15 @@ class PodcastArchiver:
         # 記事本文を組み立て（概要 → 主要論点 → 注目の発言・キーワード）
         article_body = f"{pass2c}\n\n{all_ronten}"
 
+        # --- Pass 2d: 哲学的な問いを前半・後半それぞれから生成 ---
+        print("  [Pass 2d] 哲学的な問い生成（前半・後半 各2問）...")
+        t2d = time.time()
+        questions_a = self._generate_questions_from_ronten(pass2a, n=2)
+        questions_b = self._generate_questions_from_ronten(pass2b, n=2)
+        questions_text = (questions_a + "\n\n" + questions_b).strip()
+        print(f"  Pass 2d 完了: {len(questions_text):,}文字 ({int(time.time()-t2d)}秒)")
+        questions_section = f"\n\n## 問いとして残るもの\n\n{questions_text}" if questions_text else ""
+
         # 生成条件メタデータ（factfull スコアは後で refine_loop が埋める）
         gen_model = self.analyze_model or "unknown"
         gen_meta = (
@@ -655,7 +712,7 @@ class PodcastArchiver:
 
         # YouTube 埋め込みヘッダーを冒頭に付加
         youtube_header = self._build_youtube_header()
-        self.summary_ja = f"{youtube_header}{article_body}{gen_meta}"
+        self.summary_ja = f"{youtube_header}{article_body}{questions_section}{gen_meta}"
 
         print(f"  要約完了: {len(self.summary_ja):,}文字")
         self._save_text("summary_ja.md", self.summary_ja)
