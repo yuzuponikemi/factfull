@@ -35,18 +35,16 @@ summary = re.sub(
     summary
 )
 
-# 記事の論点部分を抽出（長すぎる場合は先頭16,000字）
-article_sample = summary[:16000]
+# 記事の論点部分を抽出（先頭8,000字に制限 — コンテキスト圧迫を防ぐ）
+article_sample = summary[:8000]
 
-# トランスクリプトの前半・中盤・後半をサンプリング
+# トランスクリプトの前半・後半をサンプリング（合計4,000字）
 if transcript_en:
     total = len(transcript_en)
     transcript_sample = (
-        transcript_en[:3000]
+        transcript_en[:2000]
         + "\n\n...\n\n"
-        + transcript_en[max(0, total//2 - 1500): total//2 + 1500]
-        + "\n\n...\n\n"
-        + transcript_en[max(0, total - 3000):]
+        + transcript_en[max(0, total - 2000):]
     )
 else:
     transcript_sample = ""
@@ -103,7 +101,7 @@ payload = json.dumps({
     "model": "gemma4:26b",
     "prompt": prompt,
     "stream": True,
-    "options": {"temperature": 0.5, "num_ctx": 32768},
+    "options": {"temperature": 0.3, "num_ctx": 16384, "num_predict": 4096, "repeat_penalty": 1.1},
 }).encode("utf-8")
 
 chunks = []
