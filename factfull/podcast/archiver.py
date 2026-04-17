@@ -627,8 +627,11 @@ class PodcastArchiver:
 論点:
 {ronten}
 """
+        # gemma4:26b は thinking モードのためトークン消費が大きく 0 字になりやすい。
+        # 問い生成は reasoning 不要なので gemma4:e4b を固定で使用する。
         return self._ollama(
             prompt,
+            model="gemma4:e4b",
             num_ctx=16384,
             num_predict=2048,
             repeat_penalty=1.1,

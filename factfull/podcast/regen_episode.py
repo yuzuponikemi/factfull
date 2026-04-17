@@ -88,13 +88,23 @@ if sec_path.exists():
     print(f"  完了: {len(pass2c):,}文字 ({int(time.time()-t)}秒)")
 
     article_body = f"{pass2c}\n\n{all_ronten}"
+
+    print("\n[Pass 2d] 哲学的な問い生成（前半・後半 各2問）...")
+    t = time.time()
+    questions_a = arch._generate_questions_from_ronten(pass2a, n=2)
+    questions_b = arch._generate_questions_from_ronten(pass2b, n=2)
+    questions_text = (questions_a + "\n\n" + questions_b).strip()
+    e = int(time.time()-t)
+    print(f"  完了: {len(questions_text):,}文字 ({e}秒)")
+    questions_section = f"\n\n## 問いとして残るもの\n\n{questions_text}" if questions_text else ""
+
     gen_meta = (
         "\n\n---\n\n"
         "*生成条件: Pass 2 モデル `gemma4:26b`（3フェーズ分割）"
         " / factfull 検証 `gemma4:e4b` / スコア: TBD*\n"
     )
     youtube_header = arch._build_youtube_header()
-    summary = f"{youtube_header}{article_body}{gen_meta}"
+    summary = f"{youtube_header}{article_body}{questions_section}{gen_meta}"
     (EP_DIR / "summary_ja.md").write_text(summary, encoding="utf-8")
     print(f"\n✅ 保存完了: {EP_DIR / 'summary_ja.md'}")
     print(f"   合計文字数: {len(summary):,}文字")
