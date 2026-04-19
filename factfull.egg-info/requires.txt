@@ -1,4 +1,8 @@
 rank-bm25>=0.2.2
+neo4j>=5.0
+trafilatura>=1.6
+arxiv>=2.1
+pymupdf>=1.23
 
 [anthropic]
 anthropic>=0.40.0
