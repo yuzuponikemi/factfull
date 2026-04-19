@@ -31,11 +31,10 @@
 
 - [x] `factfull/ingest/paper.py` — arXiv / PDF 取り込み（`kg-builder` + `infoseeker` から移植）
   - PDF テキスト抽出（pdfplumber）、arXiv ダウンロード、キーワード検索 → SourceDoc
-- [ ] `factfull/ingest/book.py` — 書籍テキスト取り込み（`cogito` から移植）
-  - `cogito/services/ingestor` 相当
-- [ ] `factfull/ingest/web.py` — URL → article 取り込み（新規）
-- [ ] `factfull/extract/entity.py` — エンティティ抽出（`kg-builder` から移植）
-- [ ] `factfull/extract/relation.py` — 関係抽出 / トリプル生成（`kg-builder` から移植）
+- [x] `factfull/ingest/book.py` — Gutenberg/URL/ローカルファイル → SourceDoc（cogito から移植）
+- [x] `factfull/ingest/web.py` — URL → HTML 取得・本文抽出 → SourceDoc（新規）
+- [x] `factfull/extract/entity.py` — エンティティ抽出（kg-builder から移植・汎用化）
+- [x] `factfull/extract/relation.py` — 関係抽出 / トリプル生成（kg-builder から移植・汎用化）
 
 ---
 
