@@ -94,7 +94,7 @@ def _split_sections(text: str) -> list[tuple[str, str]]:
         preamble_extra = fm_match.group(0)
         text = text[fm_match.end():]
 
-    header_pattern = re.compile(r'^(#{1,3} .+)$', re.MULTILINE)
+    header_pattern = re.compile(r'^(#{1,6} .+)$', re.MULTILINE)
     matches = list(header_pattern.finditer(text))
 
     sections: list[tuple[str, str]] = []
@@ -187,6 +187,8 @@ _REWRITE_PROMPT = """\
 - 証拠パッセージにない情報を追加・補完しない
 - 見出し行（# で始まる行）は出力しない（本文のみを出力）
 - 修正前後を比較したコメントや説明は書かない
+- 段落・論点・文章を削除しない。証拠が不足する場合は断定表現を和らげるに留める
+- 修正後の本文は元の本文と同程度の長さを維持すること
 
 ## セクション見出し
 {header}
@@ -236,5 +238,12 @@ def _rewrite_section(
     result = llm.call(prompt, num_ctx=16384).strip()
     if not result:
         print(f"  [corrector] ⚠️  LLM が空を返したため元の本文を維持", flush=True)
+        return body
+    # 修正後が元の 60% 未満に縮んだ場合はセクション削除とみなして元の本文を維持
+    if len(result) < len(body) * 0.6:
+        print(
+            f"  [corrector] ⚠️  修正後が元の 60% 未満 ({len(result)}/{len(body)}字) のため元の本文を維持",
+            flush=True,
+        )
         return body
     return result

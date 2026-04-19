@@ -19,28 +19,34 @@ ANTHROPIC_MODEL = os.environ.get("FACTFULL_ANTHROPIC_MODEL", "claude-sonnet-4-6"
 def call(
     prompt: str,
     num_ctx: int = 8192,
-    timeout: int = 900,
+    timeout: int = 1800,
     max_retries: int = 6,
-    retry_wait: int = 45,
+    retry_wait: int = 60,
+    model: str | None = None,
 ) -> str:
     if BACKEND == "anthropic":
         return _call_anthropic(prompt)
     return _call_ollama(
         prompt, num_ctx=num_ctx, timeout=timeout,
         max_retries=max_retries, retry_wait=retry_wait,
+        model=model,
     )
 
 
 def _call_ollama(
     prompt: str,
     num_ctx: int = 8192,
-    timeout: int = 900,
+    timeout: int = 1800,
     max_retries: int = 6,
-    retry_wait: int = 45,
+    retry_wait: int = 60,
+    model: str | None = None,
 ) -> str:
     import time
+    # 実行時に env var を再読み取りすることで run_pipeline() からの動的切り替えに対応
+    _model = model if model is not None else os.environ.get("FACTFULL_OLLAMA_MODEL", OLLAMA_MODEL)
+    _url = os.environ.get("FACTFULL_OLLAMA_URL", OLLAMA_URL)
     payload = json.dumps({
-        "model": OLLAMA_MODEL,
+        "model": _model,
         "prompt": prompt,
         "stream": True,
         "options": {"temperature": 0.1, "num_ctx": num_ctx},
@@ -50,7 +56,7 @@ def _call_ollama(
     for attempt in range(1, max_retries + 1):
         try:
             req = urllib.request.Request(
-                OLLAMA_URL,
+                _url,
                 data=payload,
                 headers={"Content-Type": "application/json"},
                 method="POST",

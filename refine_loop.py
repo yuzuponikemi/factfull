@@ -92,14 +92,16 @@ def main() -> None:
                         help="最大イテレーション数 (default: 5)")
     parser.add_argument("--top-k", type=int, default=5,
                         help="各クレームの証拠パッセージ数 (default: 5)")
-    parser.add_argument("--max-claims", type=int, default=30,
-                        help="抽出クレームの最大数 (default: 30)")
+    parser.add_argument("--max-claims", type=int, default=50,
+                        help="抽出クレームの最大数 (default: 50)")
     parser.add_argument("--output-dir", default=None,
                         help="レポート・中間ファイルの保存先")
     parser.add_argument("--backend", default=None,
                         help="ollama | anthropic (default: FACTFULL_LLM_BACKEND 環境変数)")
     parser.add_argument("--editorial", action="store_true",
                         help="ループ完了後に編集後記（AI 考察）を末尾に追加する")
+    parser.add_argument("--editorial-model", default=None,
+                        help="編集後記生成に使う Ollama モデル名（省略時はメインモデルと同じ）")
     args = parser.parse_args()
 
     # バックエンド設定
@@ -203,7 +205,16 @@ def main() -> None:
     # ── 編集後記の追加（--editorial フラグがある場合）
     if args.editorial:
         _print_header("編集後記を生成中")
-        document = append_editorial_note(document)
+        editorial_model = args.editorial_model  # None のときはメインモデルを使用
+        if editorial_model:
+            print(f"  編集後記モデル: {editorial_model}", flush=True)
+        document = append_editorial_note(document, model=editorial_model)
+
+    # ── 生成条件メタデータの TBD をスコアで更新
+    score_str = f"{best_score:.0f}/100"
+    if "スコア: TBD" in document:
+        document = document.replace("スコア: TBD", f"スコア: {score_str}")
+        print(f"📋 生成条件のスコアを更新: {score_str}", flush=True)
 
     # ── 最終版を target に上書き保存
     target_path.write_text(document, encoding="utf-8")

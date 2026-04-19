@@ -57,12 +57,30 @@ class PodcastArchiver:
     SUMMARY_CHUNK_SIZE = 5000
 
     def __init__(self, youtube_url: str, model: str = None,
-                 translate_model: str = None, analyze_model: str = None):
+                 translate_model: str = None, analyze_model: str = None,
+                 config=None):
         self.youtube_url = youtube_url
         self.video_id = self._extract_video_id(youtube_url)
-        # 個別指定 > クラスデフォルト。--model で両方まとめて上書きも可
-        self.translate_model = translate_model or (model if model else self.TRANSLATE_MODEL)
-        self.analyze_model   = analyze_model   or (model if model else self.ANALYZE_MODEL)
+
+        if config is not None:
+            # PipelineConfig からすべての設定を取得
+            self.translate_model = config.translate_model
+            self.analyze_model   = config.analyze_model
+            self.CHUNK_SIZE         = config.translate_chunk_size
+            self.SUMMARY_CHUNK_SIZE = config.summary_chunk_size
+            self.blog_name       = config.blog_name
+            self.reader_persona  = config.reader_persona
+            self.n_questions     = config.n_questions
+            self.factcheck_model = config.factcheck_model
+        else:
+            # 後方互換: 従来の引数指定
+            self.translate_model = translate_model or (model if model else self.TRANSLATE_MODEL)
+            self.analyze_model   = analyze_model   or (model if model else self.ANALYZE_MODEL)
+            self.blog_name       = "SoryuNews"
+            self.reader_persona  = "英語圏情報にアクセスしたい日本語話者のエンジニア・研究者"
+            self.n_questions     = 4
+            self.factcheck_model = self.ANALYZE_MODEL
+
         self.model = self.analyze_model  # 後方互換
         self.metadata: dict = {}
         self.transcript_raw: list[dict] = []   # [{text, start, duration}, ...]
@@ -471,8 +489,8 @@ class PodcastArchiver:
         n_min, n_max = max(5, n), max(7, n + 2)
         rules = self._pass2_section_prompt_rules(n_min, n_max)
 
-        prompt = f"""あなたは「SoryuNews」というブログのポッドキャスト記事ライターです。
-読者は英語圏情報にアクセスしたい日本語話者のエンジニア・研究者です。
+        prompt = f"""あなたは「{self.blog_name}」というブログのポッドキャスト記事ライターです。
+読者は{self.reader_persona}です。
 
 以下は「{title}」（{channel}、総再生時間: {duration_str}）の**前半区間**の詳細メモです。
 この前半メモをもとに、論点セクション（前半）を Markdown で書いてください。
@@ -509,8 +527,8 @@ class PodcastArchiver:
         covered = _re.findall(r'^####\s+(.+)$', pass2a_text, _re.MULTILINE)
         covered_block = "\n".join(f"- {t}" for t in covered) if covered else "（なし）"
 
-        prompt = f"""あなたは「SoryuNews」というブログのポッドキャスト記事ライターです。
-読者は英語圏情報にアクセスしたい日本語話者のエンジニア・研究者です。
+        prompt = f"""あなたは「{self.blog_name}」というブログのポッドキャスト記事ライターです。
+読者は{self.reader_persona}です。
 
 以下は「{title}」（{channel}、総再生時間: {duration_str}）の**後半区間**の詳細メモです。
 この後半メモをもとに、論点セクション（後半）を Markdown で書いてください。
@@ -548,7 +566,7 @@ class PodcastArchiver:
         # 長すぎる場合は先頭 16,000 字だけ渡す
         ronten_for_prompt = all_ronten[:16000]
 
-        prompt = f"""あなたは「SoryuNews」というブログのポッドキャスト記事ライターです。
+        prompt = f"""あなたは「{self.blog_name}」というブログのポッドキャスト記事ライターです。
 
 以下は「{title}」（{channel}）の記事本文（論点セクション）です。
 この本文をもとに、記事の**冒頭部分と末尾部分**を Markdown で書いてください。
@@ -595,7 +613,7 @@ class PodcastArchiver:
 
     def _generate_questions_from_ronten(self, ronten: str, n: int = 2) -> str:
         """Pass 2d: 論点セクションから哲学的な問いを n 問生成する"""
-        prompt = f"""あなたは「SoryuNews」というブログの編集者です。
+        prompt = f"""あなたは「{self.blog_name}」というブログの編集者です。
 
 以下はポッドキャスト記事の論点セクションです。
 この論点が提起するが答えていない「哲学的な問い」を{n}つ生成してください。
@@ -627,11 +645,11 @@ class PodcastArchiver:
 論点:
 {ronten}
 """
-        # gemma4:26b は thinking モードのためトークン消費が大きく 0 字になりやすい。
-        # 問い生成は reasoning 不要なので gemma4:e4b を固定で使用する。
+        # analyze_model（thinking 系）はトークン消費が大きく 0 字になりやすいため、
+        # 問い生成は reasoning 不要な factcheck_model を使用する。
         return self._ollama(
             prompt,
-            model="gemma4:e4b",
+            model=self.factcheck_model,
             num_ctx=16384,
             num_predict=2048,
             repeat_penalty=1.1,
@@ -642,27 +660,32 @@ class PodcastArchiver:
     #  Step 4: Summary generation (Map-Reduce 3-phase Pass 2)
     # ------------------------------------------------------------------ #
 
-    def generate_summary(self) -> str:
+    def generate_summary(self, skip_pass1: bool = False) -> str:
         print("\n📊 Step 4: 日本語要約生成（Map-Reduce 3フェーズ Pass 2）...")
-
-        # transcript_ja を優先、なければ transcript_en を使用
-        source_text = self.transcript_ja if self.transcript_ja else self.transcript_en
-        if not source_text:
-            print("  ⚠️ トランスクリプトが空です")
-            return ""
 
         title = self.metadata.get("title", "")
         channel = self.metadata.get("channel", "")
         total_dur = self._get_total_duration()
         duration_str = self._fmt_time(total_dur) if total_dur > 0 else "不明"
 
-        # --- Pass 1: Map ---
-        print("  [Pass 1] チャンク別要点抽出（タイムスタンプ・発言者付き）...")
-        chunk_summaries = self._generate_chunk_summaries(source_text)
-
-        # 中間結果を保存
-        self._save_json("section_summaries.json",
-                        [[f"chunk_{i+1}", s] for i, s in enumerate(chunk_summaries)])
+        # --- Pass 1: Map（または既存ファイルからロード）---
+        if skip_pass1:
+            sec_path = self.out_dir / "section_summaries.json"
+            if not sec_path.exists():
+                raise FileNotFoundError(f"section_summaries.json が見つかりません: {sec_path}")
+            section_data = json.loads(sec_path.read_text(encoding="utf-8"))
+            chunk_summaries = [s for _, s in section_data]
+            print(f"  [Pass 1] スキップ（section_summaries.json 再利用: {len(chunk_summaries)}チャンク）")
+        else:
+            # transcript_ja を優先、なければ transcript_en を使用
+            source_text = self.transcript_ja if self.transcript_ja else self.transcript_en
+            if not source_text:
+                print("  ⚠️ トランスクリプトが空です")
+                return ""
+            print("  [Pass 1] チャンク別要点抽出（タイムスタンプ・発言者付き）...")
+            chunk_summaries = self._generate_chunk_summaries(source_text)
+            self._save_json("section_summaries.json",
+                            [[f"chunk_{i+1}", s] for i, s in enumerate(chunk_summaries)])
 
         # --- Pass 1.5: 英語引用の直接抽出 ---
         print("  [Pass 1.5] 英語引用抽出...")
@@ -693,24 +716,25 @@ class PodcastArchiver:
         pass2c = self._generate_article_pass2c(all_ronten, en_quotes, title, channel)
         print(f"  Pass 2c 完了: {len(pass2c):,}文字 ({int(time.time()-t2c)}秒)")
 
-        # 記事本文を組み立て（概要 → 主要論点 → 注目の発言・キーワード）
+        # 記事本文を組み立て（概要 → 論点 → 注目発言・キーワード）
         article_body = f"{pass2c}\n\n{all_ronten}"
 
         # --- Pass 2d: 哲学的な問いを前半・後半それぞれから生成 ---
-        print("  [Pass 2d] 哲学的な問い生成（前半・後半 各2問）...")
+        n_per_half = self.n_questions // 2
+        print(f"  [Pass 2d] 哲学的な問い生成（前半・後半 各{n_per_half}問）...")
         t2d = time.time()
-        questions_a = self._generate_questions_from_ronten(pass2a, n=2)
-        questions_b = self._generate_questions_from_ronten(pass2b, n=2)
+        questions_a = self._generate_questions_from_ronten(pass2a, n=n_per_half)
+        questions_b = self._generate_questions_from_ronten(pass2b, n=n_per_half)
         questions_text = (questions_a + "\n\n" + questions_b).strip()
         print(f"  Pass 2d 完了: {len(questions_text):,}文字 ({int(time.time()-t2d)}秒)")
         questions_section = f"\n\n## 問いとして残るもの\n\n{questions_text}" if questions_text else ""
 
-        # 生成条件メタデータ（factfull スコアは後で refine_loop が埋める）
+        # 生成条件メタデータ（factfull スコアは pipeline._run_factcheck_loop が埋める）
         gen_model = self.analyze_model or "unknown"
         gen_meta = (
             "\n\n---\n\n"
             f"*生成条件: Pass 2 モデル `{gen_model}`（3フェーズ分割）"
-            f" / factfull 検証 `gemma4:e4b` / スコア: TBD*\n"
+            f" / factfull 検証 `{self.factcheck_model}` / スコア: TBD*\n"
         )
 
         # YouTube 埋め込みヘッダーを冒頭に付加

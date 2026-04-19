@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: factfull
+Version: 0.1.0
+Summary: LLM-based fact-checking and podcast article generation pipeline
+Requires-Python: >=3.10
+Requires-Dist: rank-bm25>=0.2.2
+Provides-Extra: podcast
+Requires-Dist: youtube-transcript-api>=0.6.0; extra == "podcast"
+Requires-Dist: youtube-comment-downloader>=0.1.68; extra == "podcast"
+Provides-Extra: anthropic
+Requires-Dist: anthropic>=0.40.0; extra == "anthropic"

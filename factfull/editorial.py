@@ -35,12 +35,13 @@ _PROMPT = """\
 """
 
 
-def generate_editorial_note(article: str) -> str:
+def generate_editorial_note(article: str, model: str | None = None) -> str:
     """
     検証済み記事を読んで編集後記を生成し、文字列で返す。
 
     Args:
         article: ファクトチェック・修正済みの summary_ja.md 全文
+        model: Ollama モデル名。None の場合は FACTFULL_OLLAMA_MODEL 環境変数を使用
 
     Returns:
         "## 編集後記\n\n..." 形式の Markdown 文字列
@@ -49,15 +50,18 @@ def generate_editorial_note(article: str) -> str:
     article_for_prompt = article[:12000] if len(article) > 12000 else article
 
     prompt = _PROMPT.format(article=article_for_prompt)
-    note = llm.call(prompt, num_ctx=16384).strip()
+    note = llm.call(prompt, num_ctx=16384, model=model).strip()
 
     return f"\n\n## 編集後記\n\n{note}\n"
 
 
-def append_editorial_note(document: str) -> str:
+def append_editorial_note(document: str, model: str | None = None) -> str:
     """
     既存の document に編集後記セクションがなければ生成して末尾に追加する。
     既にある場合はそのまま返す。
+
+    Args:
+        model: 編集後記生成に使う Ollama モデル名（None で環境変数のモデルを使用）
 
     Returns:
         編集後記が追加された document
@@ -67,6 +71,6 @@ def append_editorial_note(document: str) -> str:
         return document
 
     print("  [editorial] 編集後記を生成中...", flush=True)
-    note = generate_editorial_note(document)
+    note = generate_editorial_note(document, model=model)
     print(f"  [editorial] 完了: {len(note)}字", flush=True)
     return document.rstrip() + note
