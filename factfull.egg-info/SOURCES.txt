@@ -3,6 +3,7 @@ pyproject.toml
 factfull/__init__.py
 factfull/claim_extractor.py
 factfull/corrector.py
+factfull/critique.py
 factfull/editorial.py
 factfull/indexer.py
 factfull/llm.py
@@ -14,6 +15,12 @@ factfull.egg-info/SOURCES.txt
 factfull.egg-info/dependency_links.txt
 factfull.egg-info/requires.txt
 factfull.egg-info/top_level.txt
+factfull/core/__init__.py
+factfull/core/types.py
+factfull/ingest/__init__.py
+factfull/ingest/chunker.py
 factfull/podcast/__init__.py
 factfull/podcast/archiver.py
 factfull/podcast/pipeline.py
+factfull/publishers/__init__.py
+factfull/publishers/homupe.py
