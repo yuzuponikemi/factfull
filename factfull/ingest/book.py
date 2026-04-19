@@ -57,11 +57,10 @@ def _strip_gutenberg(text: str) -> str:
     """Project Gutenberg のヘッダー・フッターを除去する。"""
     start = re.search(r"\*\*\* START OF (?:THE|THIS) PROJECT GUTENBERG EBOOK .+? \*\*\*", text)
     end = re.search(r"\*\*\* END OF (?:THE|THIS) PROJECT GUTENBERG EBOOK .+? \*\*\*", text)
-    if start:
-        text = text[start.end():]
-    if end:
-        text = text[:end.start()]
-    return text.strip()
+    # 元のテキストで両方のマーカーを検索してからスライス（スライス後に位置がずれるのを防ぐ）
+    begin = start.end() if start else 0
+    finish = end.start() if end else len(text)
+    return text[begin:finish].strip()
 
 
 # ── 公開 API ──────────────────────────────────────────────────────────────────
