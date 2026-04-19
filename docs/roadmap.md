@@ -14,14 +14,14 @@
 
 ---
 
-## Phase 1 — 共有基盤の整備
+## Phase 1 — 共有基盤の整備 ✅
 
 目標: すべての ingest/process モジュールが共通インターフェースを使う
 
-- [ ] `factfull/core/types.py` — `SourceDoc` / `ProcessedDoc` / `Triple` / `Entity` データクラス定義
+- [x] `factfull/core/types.py` — `SourceDoc` / `ProcessedDoc` / `Triple` / `Entity` データクラス定義
 - [ ] `factfull/llm.py` — Anthropic / Ollama に加え OpenAI 互換エンドポイント対応
-- [ ] `factfull/ingest/chunker.py` — テキスト分割ロジックを一本化（現行 `indexer.py` から抽出）
-- [ ] 既存の podcast パイプラインを `SourceDoc` / `ProcessedDoc` を返すよう refactor
+- [x] `factfull/ingest/chunker.py` — テキスト分割ロジックを一本化（chunker.py に委譲、indexer.py 後方互換維持）
+- [x] `PipelineResult.to_processed_doc()` — 既存 podcast パイプラインのアダプター追加
 
 ---
 
