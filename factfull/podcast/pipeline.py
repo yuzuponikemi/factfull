@@ -56,6 +56,7 @@ class PipelineConfig:
     top_k: int = 5
 
     # --- 機能フラグ ---
+    critique: bool = True
     editorial: bool = True
     fetch_comments: bool = False
 
@@ -191,7 +192,6 @@ def _run_factcheck_loop(
     from factfull.verifier import verify
     from factfull.reporter import generate_report, compute_score
     from factfull.corrector import correct
-    from factfull.editorial import append_editorial_note
 
     os.environ["FACTFULL_OLLAMA_MODEL"] = config.factcheck_model
 
@@ -267,9 +267,18 @@ def _run_factcheck_loop(
         print(f"💾 中間保存: {interim_path.name}", flush=True)
         document = corrected
 
+    # 批評的読み
+    if config.critique:
+        _header("批評的読みを生成中")
+        from factfull.critique import append_critique
+        editorial_model = config.editorial_model or config.factcheck_model
+        os.environ["FACTFULL_OLLAMA_MODEL"] = editorial_model
+        document = append_critique(document)
+
     # 編集後記
     if config.editorial:
         _header("編集後記を生成中")
+        from factfull.editorial import append_editorial_note
         editorial_model = config.editorial_model or config.factcheck_model
         os.environ["FACTFULL_OLLAMA_MODEL"] = editorial_model
         document = append_editorial_note(document)
