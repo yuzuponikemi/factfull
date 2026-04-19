@@ -86,6 +86,7 @@ class PipelineConfig:
     critique: bool = True
     editorial: bool = True
     fetch_comments: bool = False
+    write_graph: bool = False   # True のとき完了後に Neo4j へ自動書き込み
 
     # --- 出力先 ---
     output_base: Path = field(default_factory=lambda: Path.home() / "podcasts")
@@ -159,7 +160,7 @@ def run_pipeline(
     summary_path = arch.out_dir / "summary_ja.md"
     score = _run_factcheck_loop(config, summary_path, arch.out_dir)
 
-    return PipelineResult(
+    result = PipelineResult(
         video_id=arch.video_id,
         title=arch.metadata.get("title", ""),
         channel=arch.metadata.get("channel", ""),
@@ -168,6 +169,38 @@ def run_pipeline(
         score=score,
         metadata=arch.metadata,
     )
+
+    if config.write_graph:
+        _write_to_graph(result)
+
+    return result
+
+
+def _write_to_graph(result: PipelineResult) -> None:
+    """ProcessedDoc に変換してエンティティ抽出 → Neo4j 書き込みを行う。"""
+    from factfull.graph.neo4j import Neo4jClient
+    from factfull.extract.entity import extract_entities
+    from factfull.extract.relation import extract_relations
+
+    _header("ナレッジグラフ書き込み")
+    pdoc = result.to_processed_doc()
+    chunks = pdoc.source.chunks or [pdoc.source.text]
+
+    print("  エンティティ抽出中...", flush=True)
+    pdoc.entities = extract_entities(chunks[:10], source_id=pdoc.source.source_id)
+
+    if pdoc.entities:
+        print("  関係抽出中...", flush=True)
+        pdoc.triples = extract_relations(chunks[:10], pdoc.entities, source_id=pdoc.source.source_id)
+
+    try:
+        with Neo4jClient() as g:
+            g.setup_schema()
+            g.write_processed_doc(pdoc)
+            stats = g.get_statistics()
+            print(f"  グラフ統計: {stats}", flush=True)
+    except Exception as e:
+        print(f"  [warn] Neo4j 書き込み失敗（スキップ）: {e}", flush=True)
 
 
 # ── ヘルパー ──────────────────────────────────────────────────────────────────

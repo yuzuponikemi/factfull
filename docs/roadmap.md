@@ -38,12 +38,13 @@
 
 ---
 
-## Phase 3 — Knowledge Store 統合
+## Phase 3 — Knowledge Store 統合 ✅
 
 目標: 生成した SourceDoc / ProcessedDoc を L3 に自動書き込み
 
-- [ ] `factfull/graph/neo4j.py` — Neo4j クライアント（`kg-builder/graph/neo4j_client.py` から移植）
-- [ ] pipeline 完了時に triples を Neo4j へ自動書き込み
+- [x] `factfull/graph/neo4j.py` — Neo4j クライアント（kg-builder から移植・Source/Entity に汎用化）
+      `write_processed_doc()` でエンティティ・トリプル・MENTIONS リレーションをワンショット書き込み
+- [x] `PipelineConfig.write_graph=True` で podcast パイプライン完了後に自動エンティティ抽出 → Neo4j 書き込み
 - [ ] pipeline 完了時に summary を localsearch-mcp が監視するディレクトリへ自動配置
 
 ---
