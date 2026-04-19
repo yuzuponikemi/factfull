@@ -34,6 +34,33 @@ class PipelineResult:
     score: float        # ファクトチェックスコア (0–100)
     metadata: dict      # metadata.json の全内容
 
+    def to_processed_doc(self) -> "ProcessedDoc":
+        """factfull.core.types.ProcessedDoc に変換する。"""
+        from factfull.core.types import SourceDoc, ProcessedDoc
+
+        transcript_path = self.episode_dir / "transcript_en.txt"
+        transcript_ja_path = self.episode_dir / "transcript_ja.txt"
+
+        source = SourceDoc(
+            source_type="podcast",
+            source_id=self.video_id,
+            title=self.title,
+            text=transcript_path.read_text(encoding="utf-8") if transcript_path.exists() else "",
+            text_ja=transcript_ja_path.read_text(encoding="utf-8") if transcript_ja_path.exists() else "",
+            metadata={
+                "channel": self.channel,
+                "youtube_url": self.metadata.get("url", ""),
+                **self.metadata,
+            },
+        )
+        summary = self.summary_path.read_text(encoding="utf-8") if self.summary_path.exists() else ""
+        return ProcessedDoc(
+            source=source,
+            summary=summary,
+            score=self.score,
+            summary_path=self.summary_path,
+        )
+
 
 # ── 設定 ─────────────────────────────────────────────────────────────────────
 
