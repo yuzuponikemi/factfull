@@ -9,8 +9,8 @@
 - [x] `critique.py` — 批評的読みパス追加
 - [x] `docs/system-architecture.md` — 5層アーキテクチャ定義
 - [x] `docs/roadmap.md` — このファイル
-- [ ] `factfull/publishers/homupe.py` — `homupe/pipelines/publish.py` を移植
-- [ ] `homupe/pipelines/` — 移植完了後に削除
+- [x] `factfull/publishers/homupe.py` — `homupe/pipelines/publish.py` を移植
+- [ ] `homupe/pipelines/` — 移植完了後に削除（homupe 側で確認後）
 
 ---
 
