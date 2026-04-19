@@ -19,7 +19,7 @@
 目標: すべての ingest/process モジュールが共通インターフェースを使う
 
 - [x] `factfull/core/types.py` — `SourceDoc` / `ProcessedDoc` / `Triple` / `Entity` データクラス定義
-- [ ] `factfull/llm.py` — Anthropic / Ollama に加え OpenAI 互換エンドポイント対応
+- [x] `factfull/llm.py` — Ollama / Anthropic のみ対応（OpenAI 不要）
 - [x] `factfull/ingest/chunker.py` — テキスト分割ロジックを一本化（chunker.py に委譲、indexer.py 後方互換維持）
 - [x] `PipelineResult.to_processed_doc()` — 既存 podcast パイプラインのアダプター追加
 
@@ -29,9 +29,8 @@
 
 目標: Podcast 以外のソースを factfull に取り込む
 
-- [ ] `factfull/ingest/paper.py` — arXiv / PDF 取り込み（`kg-builder` から移植）
-  - `kg-builder/src/kg_builder/processor/pdf_extractor.py`
-  - `kg-builder/scripts/download_arxiv_paper.py`
+- [x] `factfull/ingest/paper.py` — arXiv / PDF 取り込み（`kg-builder` + `infoseeker` から移植）
+  - PDF テキスト抽出（pdfplumber）、arXiv ダウンロード、キーワード検索 → SourceDoc
 - [ ] `factfull/ingest/book.py` — 書籍テキスト取り込み（`cogito` から移植）
   - `cogito/services/ingestor` 相当
 - [ ] `factfull/ingest/web.py` — URL → article 取り込み（新規）
