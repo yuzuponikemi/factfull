@@ -35,17 +35,17 @@ from factfull.ingest.chunker import chunk_by_chars
 # ── PDF テキスト抽出 ──────────────────────────────────────────────────────────
 
 def _extract_pdf_text(pdf_path: Path) -> str:
-    """pdfplumber で PDF 全文を抽出する。"""
+    """pymupdf で PDF 全文を抽出する。"""
     try:
-        import pdfplumber  # type: ignore
+        import pymupdf  # type: ignore
     except ImportError as e:
-        raise ImportError("PDF 取り込みには pdfplumber が必要です: pip install pdfplumber") from e
+        raise ImportError("PDF 取り込みには pymupdf が必要です: pip install pymupdf") from e
 
     parts: list[str] = []
-    with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text()
-            if text:
+    with pymupdf.open(str(pdf_path)) as doc:
+        for page in doc:
+            text = page.get_text()
+            if text.strip():
                 parts.append(text)
     return "\n\n".join(parts)
 
@@ -53,21 +53,21 @@ def _extract_pdf_text(pdf_path: Path) -> str:
 def _extract_pdf_metadata(pdf_path: Path) -> dict[str, Any]:
     """PDF メタデータと推定タイトルを返す。"""
     try:
-        import pdfplumber  # type: ignore
+        import pymupdf  # type: ignore
     except ImportError:
         return {"title": pdf_path.stem, "num_pages": 0}
 
-    with pdfplumber.open(pdf_path) as pdf:
-        meta = pdf.metadata or {}
-        title = meta.get("Title", "")
-        if not title and pdf.pages:
-            first = pdf.pages[0].extract_text() or ""
+    with pymupdf.open(str(pdf_path)) as doc:
+        meta = doc.metadata or {}
+        title = meta.get("title", "")
+        if not title:
+            first = doc[0].get_text() if doc.page_count > 0 else ""
             lines = [l.strip() for l in first.split("\n") if l.strip()]
             title = lines[0] if lines else pdf_path.stem
         return {
             "title": title,
-            "author": meta.get("Author", ""),
-            "num_pages": len(pdf.pages),
+            "author": meta.get("author", ""),
+            "num_pages": doc.page_count,
             "file_size": pdf_path.stat().st_size,
         }
 
