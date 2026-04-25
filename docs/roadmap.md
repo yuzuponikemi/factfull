@@ -49,7 +49,8 @@
 目標: 同テーマの複数ソースから独自記事を生成する
 
 - [x] `factfull/synthesis/cross_source.py` — 話者別 claim + 共通エンティティ → 論文スタイル記事生成
-- [x] `scripts/e2e_synthesis.py` — Synthesis CLI
+- [x] `pipelines/synthesis.py` — Synthesis パイプライン CLI（--publish で homupe 投稿）
+- [x] `scripts/e2e_synthesis.py` — 開発・デバッグ用スクリプト
 - [ ] `factfull/synthesis/tracker.py` — 予測・発言の時系列追跡（Plan B、未着手）
 - [ ] speaker 帰属クエリの品質向上（`[Speaker Name]` prefix が全エピソードに揃うよう抽出改善中）
 
@@ -57,6 +58,7 @@
 
 ## Phase 5 — 既存リポジトリの廃止・統合完了（未着手）
 
+- [x] `homupe/pipelines/` 削除 — `factfull/publishers/homupe.py` に移植済み
 - [ ] `kg-builder` — KG 管理 API のみ残置、L1/L2 は factfull に統合済み
 - [ ] `infoseeker` — `factfull/ingest/paper.py` に統合、リポジトリ廃止
 - [ ] `docchat` — RAG ロジックを `factfull/synthesis/` に統合、Gradio UI 廃止
