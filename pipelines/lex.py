@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Lex Fridman Podcast パイプライン
-=================================
+Podcast パイプライン（Lex Fridman / Dwarkesh Patel / その他）
+=============================================================
 使い方:
   # 記事生成のみ
   python pipelines/lex.py https://www.youtube.com/watch?v=VIDEO_ID
@@ -52,7 +52,7 @@ META_MODEL = "gemma4:e4b"
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Lex Fridman Podcast → 日本語翻訳記事 パイプライン",
+        description="Podcast → 日本語翻訳記事 パイプライン",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )

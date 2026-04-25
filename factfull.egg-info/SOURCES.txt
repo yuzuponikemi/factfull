@@ -7,6 +7,7 @@ factfull/critique.py
 factfull/editorial.py
 factfull/indexer.py
 factfull/llm.py
+factfull/registry.py
 factfull/reporter.py
 factfull/retriever.py
 factfull/verifier.py
@@ -26,6 +27,7 @@ factfull/ingest/__init__.py
 factfull/ingest/book.py
 factfull/ingest/chunker.py
 factfull/ingest/paper.py
+factfull/ingest/pluralistic.py
 factfull/ingest/web.py
 factfull/podcast/__init__.py
 factfull/podcast/archiver.py
@@ -34,6 +36,8 @@ factfull/process/__init__.py
 factfull/process/summarizer.py
 factfull/publishers/__init__.py
 factfull/publishers/homupe.py
+factfull/synthesis/__init__.py
+factfull/synthesis/cross_source.py
 tests/test_chunker.py
 tests/test_core_types.py
 tests/test_extract_parse.py

@@ -37,7 +37,7 @@ from pathlib import Path
 class PodcastArchiver:
     OLLAMA_URL = os.environ.get(
         "OLLAMA_URL",
-        "http://host.docker.internal:11435/api/generate",
+        "http://localhost:11435/api/generate",
     )
 
     # モデル用途別設定
@@ -234,7 +234,10 @@ class PodcastArchiver:
             html = r.read().decode("utf-8")
 
         title_m = re.search(r'"title":"([^"]+)"', html)
-        channel_m = re.search(r'"channelName":"([^"]+)"', html)
+        channel_m = (
+            re.search(r'"ownerChannelName":"([^"]+)"', html)
+            or re.search(r'"author":"([^"]+)"', html)
+        )
         date_m = re.search(r'"publishDate":"([^"]+)"', html)
 
         self.metadata = {

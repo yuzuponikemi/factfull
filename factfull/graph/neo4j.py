@@ -129,7 +129,10 @@ class Neo4jClient:
                               e.confidence = $conf, e.created_at = datetime()
                 ON MATCH  SET e.confidence = CASE
                                 WHEN $conf > e.confidence THEN $conf
-                                ELSE e.confidence END
+                                ELSE e.confidence END,
+                             e.description = CASE
+                                WHEN $desc IS NOT NULL AND size($desc) > size(coalesce(e.description, '')) THEN $desc
+                                ELSE coalesce(e.description, $desc) END
                 """,
                 name=entity.name,
                 type=entity.type,
@@ -175,17 +178,33 @@ class Neo4jClient:
 
     # ── ワンショット書き込み ──────────────────────────────────────────────────
 
-    def write_processed_doc(self, pdoc: ProcessedDoc) -> None:
+    def clear_source_relations(self, source_id: str) -> None:
+        """このソースが生成したエンティティ間リレーションを全削除する。
+
+        再処理時に古い（低品質な）トリプルを一掃するために使う。
+        Source-[:MENTIONS]->Entity は残す。
+        """
+        with self.driver.session() as s:
+            s.run(
+                "MATCH ()-[r]->() WHERE r.source_id = $sid DELETE r",
+                sid=source_id,
+            )
+
+    def write_processed_doc(self, pdoc: ProcessedDoc, clear_old: bool = False) -> None:
         """ProcessedDoc を丸ごとグラフに書き込む。
 
         1. Source ノード upsert
-        2. Entity ノード upsert（全件）
-        3. Triple → Entity 間リレーション upsert
-        4. Source -[:MENTIONS]-> Entity リレーション作成
+        2. (clear_old=True の場合) 旧トリプル削除
+        3. Entity ノード upsert（全件）
+        4. Triple → Entity 間リレーション upsert
+        5. Source -[:MENTIONS]-> Entity リレーション作成
         """
         print(f"  [neo4j] 書き込み開始: {pdoc.source.source_id}", flush=True)
 
         self.upsert_source(pdoc.source)
+
+        if clear_old:
+            self.clear_source_relations(pdoc.source.source_id)
 
         for e in pdoc.entities:
             self.upsert_entity(e)

@@ -13,3 +13,7 @@ Requires-Dist: youtube-transcript-api>=0.6.0; extra == "podcast"
 Requires-Dist: youtube-comment-downloader>=0.1.68; extra == "podcast"
 Provides-Extra: anthropic
 Requires-Dist: anthropic>=0.40.0; extra == "anthropic"
+Provides-Extra: diarize
+Requires-Dist: pyannote.audio>=3.1; extra == "diarize"
+Requires-Dist: yt-dlp>=2024.1.0; extra == "diarize"
+Requires-Dist: torch>=2.0; extra == "diarize"
