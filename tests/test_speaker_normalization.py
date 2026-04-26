@@ -180,3 +180,69 @@ def test_extract_speakers_filters_japanese():
     text = "―― **Anthropicの元メンバー**\n本文..."
     names = _extract_speakers_from_summary(text)
     assert names == []
+
+
+# ── ポスト処理: タイポ補正テスト ─────────────────────────────────────────────
+
+def test_fix_speaker_prefix_typos_exact():
+    """完全一致の正規名はそのまま保持される。"""
+    from factfull.extract.podcast_extract import _fix_speaker_prefix_typos
+    from factfull.core.types import Entity
+
+    e = Entity(name="AGI", type="claim", description="[Demis Hassabis] argues that AGI needs world models.", confidence=0.9)
+    result = _fix_speaker_prefix_typos([e], ["Demis Hassabis"])
+    assert result[0].description.startswith("[Demis Hassabis]")
+
+
+def test_fix_speaker_prefix_typos_corrects_typo():
+    """タイポ名 [Demess Hassabis] → [Demis Hassabis] に補正される。"""
+    from factfull.extract.podcast_extract import _fix_speaker_prefix_typos
+    from factfull.core.types import Entity
+
+    cases = [
+        "[Demess Hassabis] argues that...",
+        "[Demis Haybbis] claims that...",
+        "[Demis Hassability] posits that...",
+    ]
+    for desc in cases:
+        e = Entity(name="test", type="claim", description=desc, confidence=0.9)
+        result = _fix_speaker_prefix_typos([e], ["Demis Hassabis"])
+        assert result[0].description.startswith("[Demis Hassabis]"), (
+            f"補正失敗: '{desc}' → '{result[0].description[:40]}'"
+        )
+
+
+def test_fix_speaker_prefix_typos_no_false_positive():
+    """全く別人名は補正されない（閾値チェック）。"""
+    from factfull.extract.podcast_extract import _fix_speaker_prefix_typos
+    from factfull.core.types import Entity
+
+    e = Entity(name="test", type="claim", description="[Lex Fridman] asks about...", confidence=0.9)
+    result = _fix_speaker_prefix_typos([e], ["Demis Hassabis"])
+    assert result[0].description.startswith("[Lex Fridman]")
+
+
+def test_fix_generic_placeholder_in_description():
+    """[The Guest] prefix が正規名に置換される。"""
+    from factfull.extract.podcast_extract import _fix_speaker_prefix_typos
+    from factfull.core.types import Entity
+
+    # generic は別ルート(_is_generic)で処理されるので、
+    # _fix_speaker_prefix_typos はタイポのみ対象（genericは閾値未満で素通り）
+    # → generic置換は extract_from_summary 内の _is_generic パスで処理
+    # ここでは generic が素通りすることを確認
+    e = Entity(name="test", type="claim", description="[The Guest] warns that...", confidence=0.9)
+    result = _fix_speaker_prefix_typos([e], ["Demis Hassabis"])
+    # "The Guest" は ratio < 0.82 なので補正されない（別パスで処理）
+    assert result[0].description.startswith("[The Guest]")
+
+
+def test_fix_triple_speaker_typos():
+    """triple の subject タイポが補正される。"""
+    from factfull.extract.podcast_extract import _fix_triple_speaker_typos
+    from factfull.core.types import Triple
+
+    t = Triple(subject="Demess Hassabis", predicate="argues_that",
+               object="AGI needs world models", confidence=0.9, source_id="test")
+    result = _fix_triple_speaker_typos([t], ["Demis Hassabis"])
+    assert result[0].subject == "Demis Hassabis"

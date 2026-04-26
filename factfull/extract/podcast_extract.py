@@ -17,6 +17,7 @@ factfull/extract/podcast_extract.py
 """
 from __future__ import annotations
 
+import difflib
 import json
 import re
 from typing import Any
@@ -528,15 +529,75 @@ Output JSON only:
 """
 
 
+_DESC_PREFIX_RE = re.compile(r"^\[([^\]]+)\]")
+_FUZZY_THRESHOLD = 0.80  # SequenceMatcher ratio でこれ以上なら同一人物とみなす
+
+
+def _closest_speaker(name: str, canonical: list[str]) -> str | None:
+    """name に最も近い正規スピーカー名を返す。閾値未満なら None。"""
+    best_ratio, best_name = 0.0, None
+    for canon in canonical:
+        ratio = difflib.SequenceMatcher(None, name.lower(), canon.lower()).ratio()
+        if ratio > best_ratio:
+            best_ratio, best_name = ratio, canon
+    return best_name if best_ratio >= _FUZZY_THRESHOLD else None
+
+
+def _fix_speaker_prefix_typos(
+    entities: list, canonical: list[str]
+) -> list:
+    """entity.description の [Name] prefix をfuzzy補正する。"""
+    for e in entities:
+        if not e.description:
+            continue
+        m = _DESC_PREFIX_RE.match(e.description)
+        if not m:
+            continue
+        prefix_name = m.group(1)
+        # 完全一致はスキップ
+        if prefix_name in canonical:
+            continue
+        fixed = _closest_speaker(prefix_name, canonical)
+        if fixed:
+            e.description = f"[{fixed}]" + e.description[m.end():]
+    return entities
+
+
+def _fix_triple_speaker_typos(triples: list, canonical: list[str]) -> list:
+    """triple の subject/object をfuzzy補正する。"""
+    for t in triples:
+        if t.subject not in canonical:
+            fixed = _closest_speaker(t.subject, canonical)
+            if fixed:
+                t.subject = fixed
+        if t.object not in canonical:
+            fixed = _closest_speaker(t.object, canonical)
+            if fixed:
+                t.object = fixed
+    return triples
+
+
+_GENERIC_SPEAKER_NAMES = {
+    "guest", "the guest", "a guest",
+    "speaker", "the speaker", "a speaker",
+    "host", "the host",
+    "interviewee", "the interviewee",
+    "narrator", "the narrator",
+}
+
+
 def _make_speakers_block(speakers: list[str]) -> str:
     """正規スピーカー名をプロンプトに注入するブロックを生成する。"""
     if not speakers:
         return ""
     names = ", ".join(f'"{s}"' for s in speakers)
+    forbidden = ', '.join(['"The Guest"', '"The Speaker"', '"Host"', '"Interviewee"', '"Speaker"'])
     return (
         f"## CANONICAL SPEAKER NAMES — use these EXACT strings, no variations\n"
-        f"{names}\n"
-        f"Never write abbreviated, misspelled, or alternative forms of these names.\n\n"
+        f"Known speakers: {names}\n"
+        f"CRITICAL: Never use generic placeholders like {forbidden}.\n"
+        f"If a statement is attributed to a speaker, use their EXACT canonical name above.\n"
+        f"If unsure which speaker, use the first canonical name: \"{speakers[0]}\".\n\n"
     )
 
 
@@ -620,19 +681,34 @@ def extract_from_summary(
         if key not in existing_keys:
             triples.append(t)
 
+    # speaker prefixのタイポ・表記揺れを正規名に補正
+    if speaker_names:
+        entities = _fix_speaker_prefix_typos(entities, speaker_names)
+        triples  = _fix_triple_speaker_typos(triples, speaker_names)
+
     # "Guest" / "The Guest" 等 → ゲストのフルネームに解決
     if len(speaker_names) >= 1:
         guest_name = speaker_names[0]
-        def _is_guest_placeholder(name: str) -> bool:
-            n = name.strip().lower()
-            return n in {"guest", "the guest", "a guest", "speaker", "the speaker"}
+        def _is_generic(name: str) -> bool:
+            return name.strip().lower() in _GENERIC_SPEAKER_NAMES
         for e in entities:
-            if _is_guest_placeholder(e.name):
+            if _is_generic(e.name):
                 e.name = guest_name
+            # description の [The Guest] / [Speaker] prefix も置換
+            if e.description:
+                for placeholder in _GENERIC_SPEAKER_NAMES:
+                    # "[The Guest]", "[Speaker]" etc. at start of description
+                    pattern = re.compile(
+                        r"^\[" + re.escape(placeholder) + r"\]",
+                        re.IGNORECASE,
+                    )
+                    if pattern.match(e.description):
+                        e.description = pattern.sub(f"[{guest_name}]", e.description, count=1)
+                        break
         for t in triples:
-            if _is_guest_placeholder(t.subject):
+            if _is_generic(t.subject):
                 t.subject = guest_name
-            if _is_guest_placeholder(t.object):
+            if _is_generic(t.object):
                 t.object = guest_name
 
     print(f"  [relation] 抽出完了: {len(triples)} トリプル", flush=True)
