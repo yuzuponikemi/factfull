@@ -89,13 +89,14 @@ def main() -> None:
         post_path = blog_dir / filename
 
         # frontmatter を付けて書き出す
-        tags = "AI, 合成記事"
+        tags_list = "AI, 合成記事".split(", ")
+        tags_yaml = "\n  - ".join(tags_list)
         frontmatter = f"""---
 date: {today.isoformat()}
 categories:
   - Podcast
 tags:
-  - {tags.replace(", ", "\n  - ")}
+  - {tags_yaml}
 ---
 
 # {args.topic}

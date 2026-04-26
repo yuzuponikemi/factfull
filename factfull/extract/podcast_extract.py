@@ -459,6 +459,7 @@ Extract high-quality, specific entities. Focus on intellectual content.
 - Extract the most intellectually significant entities — quality over quantity
 - confidence: 0.9+ for central arguments, 0.7 for supporting details
 
+{speakers_block}
 ## CRITICAL: Speaker attribution example
 If Ilya Sutskever argues that "LLMs are not enough for AGI":
   "name": "LLMs alone cannot achieve AGI",
@@ -527,11 +528,24 @@ Output JSON only:
 """
 
 
+def _make_speakers_block(speakers: list[str]) -> str:
+    """正規スピーカー名をプロンプトに注入するブロックを生成する。"""
+    if not speakers:
+        return ""
+    names = ", ".join(f'"{s}"' for s in speakers)
+    return (
+        f"## CANONICAL SPEAKER NAMES — use these EXACT strings, no variations\n"
+        f"{names}\n"
+        f"Never write abbreviated, misspelled, or alternative forms of these names.\n\n"
+    )
+
+
 def extract_from_summary(
     summary_text: str,
     source_id: str = "",
     model: str | None = None,
     chunk_size: int = 6000,
+    canonical_speakers: list[str] | None = None,
 ) -> tuple[list[Entity], list[Triple]]:
     """高品質な日本語サマリーからエンティティとトリプルを抽出する。
 
@@ -551,12 +565,17 @@ def extract_from_summary(
     chunks = _split_summary(summary_text, chunk_size=chunk_size)
     print(f"  [summary_extract] {len(chunks)} チャンクで処理 (model={model})", flush=True)
 
+    # 正規スピーカー名: 引数 > サマリーから自動抽出
+    if canonical_speakers is None:
+        canonical_speakers = _extract_speakers_from_summary(summary_text)
+    speakers_block = _make_speakers_block(canonical_speakers)
+
     # エンティティ抽出
     seen_entities: dict[str, Entity] = {}
     for i, chunk in enumerate(chunks, 1):
         print(f"  [entity] チャンク {i}/{len(chunks)} 処理中...", flush=True)
         raw = llm.call(
-            _SUMMARY_ENTITY_PROMPT.format(text=chunk[:6000]),
+            _SUMMARY_ENTITY_PROMPT.format(text=chunk[:6000], speakers_block=speakers_block),
             num_ctx=10000,
             timeout=3600,
             model=model,
@@ -569,8 +588,8 @@ def extract_from_summary(
     entities = list(seen_entities.values())
     print(f"  [entity] 抽出完了: {len(entities)} エンティティ", flush=True)
 
-    # 話者をフルネームで確保
-    speaker_names = _extract_speakers_from_summary(summary_text)
+    # 話者をフルネームで確保（canonical_speakers を再利用）
+    speaker_names = canonical_speakers
     entities = _ensure_speaker_entities(speaker_names, entities, source_id)
 
     # 関係抽出
