@@ -548,16 +548,63 @@ def _split_summary(text: str, chunk_size: int = 6000) -> list[str]:
     return chunks or [text]
 
 
+_JP_RE = re.compile(r"[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fff]")
+_GENERIC_LOWER = {
+    "speaker", "the speaker", "a speaker",
+    "host", "the host", "interviewee", "the interviewee",
+    "narrator", "the narrator", "guest", "the guest",
+}
+# "conversation with X," / "conversation with X." パターン
+_TRANSCRIPT_GUEST_RE = re.compile(
+    r"(?:conversation|interview)[\s\n]+with[\s\n]+([A-Z][A-Za-z](?:[A-Za-z\s\.\-]){1,38}?)[\s\n]*,",
+    re.IGNORECASE,
+)
+# YouTube タイトル "Name: ..." または "Name – ..." パターン
+_TITLE_GUEST_RE = re.compile(r"^([A-Z][A-Za-z\s\.\-]{2,40?}?)\s*[:\–—]")
+
+
 def _extract_speakers_from_summary(text: str) -> list[str]:
     """サマリー中の「―― **Name**」形式から話者名を抽出する。
-    日本語文字を含む役職説明（例: Anthropic元メンバー）は除外する。
+    日本語・genericプレースホルダーを除外する。
     """
-    _JP = re.compile(r"[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fff]")
     names = []
     for m in re.finditer(r"――\s+\*\*([^*]+)\*\*", text):
         name = m.group(1).strip()
-        if _JP.search(name):
+        if _JP_RE.search(name):
+            continue
+        if name.lower() in _GENERIC_LOWER:
             continue
         if name not in names:
             names.append(name)
     return names
+
+
+def extract_speakers(
+    summary_text: str,
+    title: str = "",
+    transcript_en: str = "",
+) -> list[str]:
+    """話者名を優先順位付きで取得する。
+
+    1. サマリーの「―― **Name**」形式（最優先）
+    2. タイトルの「Name: ...」または「Name – ...」パターン
+    3. トランスクリプト冒頭の「conversation with Name」パターン
+    """
+    names = _extract_speakers_from_summary(summary_text)
+    if names:
+        return names
+
+    if title:
+        m = _TITLE_GUEST_RE.match(title)
+        if m:
+            candidate = m.group(1).strip()
+            if len(candidate.split()) >= 2 and not _JP_RE.search(candidate):
+                return [candidate]
+
+    if transcript_en:
+        for m in _TRANSCRIPT_GUEST_RE.finditer(transcript_en[:500]):
+            candidate = m.group(1).strip().rstrip(",.")
+            if len(candidate.split()) >= 2 and not _JP_RE.search(candidate):
+                return [candidate]
+
+    return []

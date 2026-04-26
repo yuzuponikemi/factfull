@@ -18,7 +18,7 @@ def write_to_graph(result, config) -> None:
     from factfull.core.types import SourceDoc, ProcessedDoc
     from factfull.extract.podcast_extract import (
         extract_from_summary,
-        _extract_speakers_from_summary,
+        extract_speakers,
     )
     from factfull.normalize.wiki_linker import WikiLinker
     from factfull.normalize.entity_normalizer import normalize_entities
@@ -26,7 +26,13 @@ def write_to_graph(result, config) -> None:
     _header("ナレッジグラフ書き込み")
 
     summary_text = result.summary_path.read_text(encoding="utf-8")
-    canonical_speakers = _extract_speakers_from_summary(summary_text)
+    transcript_en = (result.episode_dir / "transcript_en.txt").read_text(encoding="utf-8") \
+        if (result.episode_dir / "transcript_en.txt").exists() else ""
+    canonical_speakers = extract_speakers(
+        summary_text,
+        title=result.title,
+        transcript_en=transcript_en,
+    )
     print(f"  正規スピーカー: {canonical_speakers}", flush=True)
 
     extract_model = getattr(config, "extract_model", config.analyze_model)
