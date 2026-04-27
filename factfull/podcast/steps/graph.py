@@ -81,6 +81,21 @@ def write_to_graph(result, config) -> None:
     except Exception as e:
         print(f"  [warn] 正規化失敗（スキップ）: {e}", flush=True)
 
+    # コンセプト重複マージ（文字列正規化 + 略語展開）
+    _header("コンセプト正規化 (重複マージ)")
+    try:
+        from factfull.normalize.concept_normalizer import (
+            merge_string_duplicates,
+            merge_acronym_duplicates,
+        )
+        with Neo4jClient() as client:
+            s1 = merge_string_duplicates(client)
+            s2 = merge_acronym_duplicates(client)
+        print(f"  文字列マージ: {s1}", flush=True)
+        print(f"  略語マージ:   {s2}", flush=True)
+    except Exception as e:
+        print(f"  [warn] コンセプト正規化失敗（スキップ）: {e}", flush=True)
+
 
 def _header(text: str) -> None:
     line = "=" * 60
