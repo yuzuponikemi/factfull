@@ -100,7 +100,7 @@ def synthesize(
     prompt = _build_prompt(all_sources, speaker_claims, speaker_concepts, shared, topic)
 
     from factfull import llm
-    return llm.call(prompt, num_ctx=32768, timeout=3600, model=model)
+    return llm.call(prompt, num_ctx=32768, num_predict=12000, timeout=3600, model=model)
 
 
 # ── 内部ヘルパー ───────────────────────────────────────────────────────────────
