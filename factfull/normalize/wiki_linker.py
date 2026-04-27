@@ -56,7 +56,24 @@ def _title_confidence(query: str, title: str) -> float:
     q, t = query.lower().strip(), title.lower().strip()
     if q == t:
         return 1.0
-    if q in t or t in q:
+    # t が q で始まる場合は高スコア — ただし数字サフィックスは除外
+    # 例: "machine learning (ML)" OK, "Mercury 1" NG
+    def _starts_with_qualifier(base: str, full: str) -> bool:
+        if not full.startswith(base):
+            return False
+        raw_suffix = full[len(base):]
+        if not raw_suffix.strip():
+            return True
+        # 括弧 or カンマ は qualifier（OK）
+        if raw_suffix.lstrip()[0] in "([,":
+            return True
+        # スペース + 単語 は qualifier（OK）— ただし数字で始まる単語は除外
+        if raw_suffix.startswith(" "):
+            next_word = raw_suffix.strip().split()[0]
+            return not next_word[0].isdigit()
+        return False
+
+    if _starts_with_qualifier(q, t) or _starts_with_qualifier(t, q):
         return 0.85
     qw = set(re.split(r"\W+", q)) - {""}
     tw = set(re.split(r"\W+", t)) - {""}
