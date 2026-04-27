@@ -23,6 +23,70 @@ _DEFAULT_TYPES = ("person", "organization")
 _MIN_CONFIDENCE = 0.7
 
 
+def _rename_entity(client: "Neo4jClient", old_name: str, new_name: str) -> None:
+    """APOC なしで Entity ノードを old_name → new_name にリネームする。
+
+    手順:
+      1. new ノードを MERGE し old のプロパティを継承
+      2. old への全入力リレーションをタイプ別に new へ移植
+      3. old からの全出力リレーションをタイプ別に new へ移植
+      4. 孤立した old ノードを DELETE
+    """
+    # Step 1: new ノード作成 / 既存なら confidence を高い方に更新
+    client.run_cypher(
+        """
+        MATCH (old:Entity {name: $old_name})
+        MERGE (new:Entity {name: $new_name})
+        ON CREATE SET new.type        = old.type,
+                      new.confidence  = old.confidence,
+                      new.description = old.description
+        ON MATCH  SET new.confidence  = CASE
+                        WHEN old.confidence > new.confidence
+                        THEN old.confidence
+                        ELSE new.confidence END
+        """,
+        {"old_name": old_name, "new_name": new_name},
+    )
+
+    params = {"old_name": old_name, "new_name": new_name}
+
+    # Step 2: 入力リレーションのタイプを列挙して移植
+    in_types = client.run_cypher(
+        "MATCH ()-[r]->(old:Entity {name: $old_name}) RETURN DISTINCT type(r) AS rtype",
+        {"old_name": old_name},
+    )
+    for row in in_types:
+        rtype = row["rtype"]
+        client.run_cypher(
+            f"MATCH (src)-[r:`{rtype}`]->(old:Entity {{name: $old_name}}) "
+            f"MATCH (new:Entity {{name: $new_name}}) WHERE old <> new "
+            f"MERGE (src)-[nr:`{rtype}`]->(new) ON CREATE SET nr = properties(r) "
+            f"DELETE r",
+            params,
+        )
+
+    # Step 3: 出力リレーションのタイプを列挙して移植
+    out_types = client.run_cypher(
+        "MATCH (old:Entity {name: $old_name})-[r]->() RETURN DISTINCT type(r) AS rtype",
+        {"old_name": old_name},
+    )
+    for row in out_types:
+        rtype = row["rtype"]
+        client.run_cypher(
+            f"MATCH (old:Entity {{name: $old_name}})-[r:`{rtype}`]->(dst) "
+            f"MATCH (new:Entity {{name: $new_name}}) WHERE old <> new "
+            f"MERGE (new)-[nr:`{rtype}`]->(dst) ON CREATE SET nr = properties(r) "
+            f"DELETE r",
+            params,
+        )
+
+    # Step 4: 孤立した old ノードを削除
+    client.run_cypher(
+        "MATCH (old:Entity {name: $old_name}) WHERE NOT (old)--() DELETE old",
+        {"old_name": old_name},
+    )
+
+
 def normalize_entities(
     client: Neo4jClient,
     linker: WikiLinker,
@@ -82,35 +146,7 @@ def normalize_entities(
 
             # Neo4j 更新
             if renamed:
-                # 旧ノードを削除して正規名でマージ
-                # (MENTIONS と ARGUES_THAT も付け替える)
-                client.run_cypher(
-                    """
-                    MATCH (old:Entity {name: $old_name})
-                    MERGE (new:Entity {name: $new_name})
-                    ON CREATE SET new.type = old.type,
-                                  new.confidence = old.confidence,
-                                  new.description = old.description
-                    ON MATCH  SET new.confidence = CASE
-                                    WHEN old.confidence > new.confidence THEN old.confidence
-                                    ELSE new.confidence END
-                    WITH old, new
-                    CALL {
-                        WITH old, new
-                        MATCH (src)-[r:MENTIONS]->(old)
-                        MERGE (src)-[:MENTIONS]->(new)
-                        DELETE r
-                    }
-                    CALL {
-                        WITH old, new
-                        MATCH (p)-[r:ARGUES_THAT]->(old)
-                        MERGE (p)-[:ARGUES_THAT]->(new)
-                        DELETE r
-                    }
-                    DELETE old
-                    """,
-                    {"old_name": name, "new_name": canonical},
-                )
+                _rename_entity(client, name, canonical)
                 stats["renamed"] += 1
 
             # Wikipedia メタデータを付与
