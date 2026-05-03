@@ -452,6 +452,141 @@ def _default_slug(title_en: str) -> str:
     return slug[:60]
 
 
+# ── Book Guide Publisher ───────────────────────────────────────────────────────
+
+_BOOK_META_PROMPT = """\
+あなたは書籍ブログの編集者です。
+以下のファクトチェック済み日本語ブックガイドを読み、ブログ投稿に必要なメタデータを生成してください。
+
+## 著者
+{author}
+
+## 書籍タイトル
+{book_title}
+
+## 記事（抜粋）
+{article}
+
+---
+
+## 出力形式（JSON のみ。前置き・説明・コードブロック記法は不要）
+
+{{
+  "title_ja": "日本語タイトル（最大50字。書名をそのまま使わず、読む価値・核心を伝える表現）",
+  "excerpt": "2〜3文の日本語抜粋（ブログ一覧に表示。本書の最重要論点と読む価値を伝える）",
+  "tags": ["タグ1", "タグ2", "タグ3", "タグ4", "タグ5"],
+  "slug": "URLスラッグ（英数字・ハイフンのみ、最大60字。例: plato-republic-book-guide）"
+}}
+"""
+
+
+@dataclass
+class BookGuideMetadata:
+    title_ja: str
+    excerpt: str
+    tags: list[str]
+    slug: str
+    date: str
+
+
+def generate_book_metadata(
+    result,
+    model: str = "gemma4:e4b",
+    today: str | None = None,
+) -> BookGuideMetadata:
+    """
+    BookPipelineResult からブックガイド用ブログメタデータを生成する。
+
+    Args:
+        result: BookPipelineResult
+        model: メタデータ生成に使う Ollama モデル
+        today: 公開日（YYYY-MM-DD）。省略時は今日の日付
+    """
+    from factfull.llm import call
+
+    os.environ["FACTFULL_LLM_BACKEND"] = "ollama"
+    os.environ["FACTFULL_OLLAMA_MODEL"] = model
+
+    guide_text = result.book_guide_path.read_text(encoding="utf-8")
+    article_for_prompt = guide_text[:8000]
+
+    existing_tags = _extract_keywords(guide_text)
+
+    prompt = _BOOK_META_PROMPT.format(
+        author=result.author,
+        book_title=result.book_title,
+        article=article_for_prompt,
+    )
+    raw = call(prompt, num_ctx=16384)
+    data = _parse_json(raw)
+
+    pub_date = today or date.today().strftime("%Y-%m-%d")
+    slug_suffix = data.get("slug", f"{result.book_id.replace('_', '-')}-book-guide")
+    slug = f"{pub_date}-{slug_suffix}"
+
+    tags = existing_tags if existing_tags else data.get("tags", [])
+    if "Book Guide" not in tags:
+        tags.append("Book Guide")
+
+    return BookGuideMetadata(
+        title_ja=data.get("title_ja", f"{result.book_title} ブックガイド"),
+        excerpt=data.get("excerpt", ""),
+        tags=tags,
+        slug=slug,
+        date=pub_date,
+    )
+
+
+def create_book_guide_post(
+    result,
+    meta: BookGuideMetadata,
+    blog_dir: Path,
+) -> Path:
+    """
+    MkDocs Material ブログ形式のブックガイド記事 Markdown ファイルを作成する。
+
+    Args:
+        result: BookPipelineResult
+        meta: generate_book_metadata() の戻り値
+        blog_dir: ブログ記事の出力先ディレクトリ
+
+    Returns:
+        作成した .md ファイルのパス
+    """
+    out_path = blog_dir / f"{meta.slug}.md"
+
+    if out_path.exists():
+        print(f"  スキップ（既存）: {out_path.name}")
+        return out_path
+
+    blog_dir.mkdir(parents=True, exist_ok=True)
+
+    guide_text = result.book_guide_path.read_text(encoding="utf-8")
+    tags_yaml = "\n".join(f"  - {t}" for t in meta.tags)
+
+    post = f"""---
+title: {meta.title_ja}
+date: {meta.date}
+categories:
+  - Book Guide
+tags:
+{tags_yaml}
+---
+
+{meta.excerpt}
+
+<!-- more -->
+
+{guide_text.strip()}
+"""
+    out_path.write_text(post, encoding="utf-8")
+    print(f"  ✅ 作成: {out_path}")
+    print(f"     タイトル: {meta.title_ja}")
+    print(f"     スコア: {result.score:.0f}/100")
+
+    return out_path
+
+
 def default_blog_dir(homupe_root: Path | None = None) -> Path:
     """今月のブログ記事ディレクトリを返す。
 

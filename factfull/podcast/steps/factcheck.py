@@ -17,7 +17,27 @@ def run_factcheck(result, config) -> float:
     return _factcheck_loop(config, result.summary_path, result.episode_dir)
 
 
-def _factcheck_loop(config, summary_path: Path, output_dir: Path) -> float:
+def run_factcheck_on_file(
+    config,
+    document_path: Path,
+    truth_path: Path,
+    output_dir: Path,
+) -> float:
+    """
+    任意のドキュメントとtruthファイルに対してファクトチェックループを実行する。
+    書籍ガイドなど podcast 以外のコンテンツに使用する。
+    """
+    return _factcheck_loop(
+        config, document_path, output_dir, truth_path=truth_path
+    )
+
+
+def _factcheck_loop(
+    config,
+    summary_path: Path,
+    output_dir: Path,
+    truth_path: Path | None = None,
+) -> float:
     from factfull.indexer import build_index
     from factfull.claim_extractor import extract
     from factfull.retriever import retrieve
@@ -27,9 +47,10 @@ def _factcheck_loop(config, summary_path: Path, output_dir: Path) -> float:
 
     os.environ["FACTFULL_OLLAMA_MODEL"] = config.factcheck_model
 
-    truth_path = output_dir / "transcript_en.txt"
+    if truth_path is None:
+        truth_path = output_dir / "transcript_en.txt"
     if not truth_path.exists():
-        print("[warn] transcript_en.txt が見つかりません。ファクトチェックをスキップ。")
+        print(f"[warn] {truth_path.name} が見つかりません。ファクトチェックをスキップ。")
         return 0.0
 
     _header("ファクトチェック開始")
