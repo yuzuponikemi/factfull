@@ -30,6 +30,7 @@ from factfull.podcast.pipeline import PipelineConfig, run_pipeline
 config = PipelineConfig(
     translate_model="translategemma:12b",
     analyze_model="gemma4:26b",
+    extract_model="gemma4:26b",
     factcheck_model="gemma4:e4b",
     editorial_model=None,
     translate_chunk_size=6000,
@@ -41,6 +42,7 @@ config = PipelineConfig(
     critique=True,
     editorial=True,
     fetch_comments=False,
+    write_graph=True,
     output_base=Path.home() / "podcasts",
     blog_name="SoryuNews",
     reader_persona="英語圏情報にアクセスしたい日本語話者のエンジニア・研究者",
