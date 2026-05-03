@@ -252,14 +252,28 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / (na * nb)
 
 
+def _name_token_overlap(a: str, b: str) -> float:
+    """名前の単語トークン重複率（Jaccard）。0 なら共通語なし。"""
+    def tokens(s: str) -> set[str]:
+        return {t.lower() for t in re.split(r"[\s\-_/]+", s) if len(t) > 2}
+    ta, tb = tokens(a), tokens(b)
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / len(ta | tb)
+
+
 def find_embedding_duplicates(
     client: Neo4jClient,
     types: Sequence[str] = _DEFAULT_TYPES,
     threshold: float = _EMBED_THRESHOLD,
-    embed_model: str = "nomic-embed-text",
+    embed_model: str = "mxbai-embed-large",
     limit: int = 500,
+    min_name_overlap: float = 0.0,
 ) -> list[tuple[str, str, float]]:
     """埋め込みベクトルのコサイン類似度で意味的重複ペアを検出する。
+
+    embed テキストは "name: description" — 文脈を含めることで短い名前のノイズを減らす。
+    min_name_overlap > 0 を設定すると名前トークン重複がない誤検知を除外できる。
 
     Returns:
         list of (name_a, name_b, similarity) — 閾値以上のペア
@@ -268,29 +282,36 @@ def find_embedding_duplicates(
         """
         MATCH (e:Entity)
         WHERE e.type IN $types
-        RETURN e.name AS name
+        RETURN e.name AS name, e.description AS description
         ORDER BY e.confidence DESC
         LIMIT $limit
         """,
         {"types": list(types), "limit": limit},
     )
-    names = [r["name"] for r in rows]
-    total = len(names)
-    print(f"  埋め込み計算中: {total} 件...", flush=True)
+    entries = [(r["name"], (r.get("description") or "")[:200]) for r in rows]
+    total = len(entries)
+    print(f"  埋め込み計算中: {total} 件 (model={embed_model})...", flush=True)
 
     embeddings: dict[str, list[float]] = {}
-    for i, name in enumerate(names, 1):
+    descriptions: dict[str, str] = {}
+    for i, (name, desc) in enumerate(entries, 1):
         if i % 50 == 0:
-            print(f"    {i}/{total}", flush=True)
-        vec = _get_embedding(name, model=embed_model)
+            print(f"    {i}/{total}", flush=True, end="\r")
+        embed_text = f"{name}: {desc}" if desc else name
+        vec = _get_embedding(embed_text, model=embed_model)
         if vec:
             embeddings[name] = vec
+            descriptions[name] = desc
+
+    print(f"    {total}/{total} 完了", flush=True)
 
     pairs = []
     names_with_emb = list(embeddings.keys())
     for i in range(len(names_with_emb)):
         for j in range(i + 1, len(names_with_emb)):
             na, nb = names_with_emb[i], names_with_emb[j]
+            if min_name_overlap > 0 and _name_token_overlap(na, nb) < min_name_overlap:
+                continue
             sim = _cosine_similarity(embeddings[na], embeddings[nb])
             if sim >= threshold:
                 pairs.append((na, nb, sim))
@@ -302,22 +323,33 @@ def merge_embedding_duplicates(
     client: Neo4jClient,
     types: Sequence[str] = _DEFAULT_TYPES,
     threshold: float = _EMBED_THRESHOLD,
-    embed_model: str = "nomic-embed-text",
-    dry_run: bool = False,
+    embed_model: str = "mxbai-embed-large",
+    dry_run: bool = True,
     limit: int = 500,
+    min_name_overlap: float = 0.0,
 ) -> dict[str, int]:
-    """埋め込みベースの意味的重複を検出してマージする（要人間確認）。"""
-    pairs = find_embedding_duplicates(client, types, threshold, embed_model, limit)
-    stats = {"candidates": len(pairs), "merged": 0, "failed": 0}
+    """埋め込みベースの意味的重複を検出してマージする。
 
-    print(f"\n  意味的重複候補: {len(pairs)} ペア (threshold={threshold})", flush=True)
+    dry_run=True（デフォルト）では候補を表示するのみ。
+    実際にマージするには --no-dry-run を明示的に指定する。
+    """
+    pairs = find_embedding_duplicates(
+        client, types, threshold, embed_model, limit, min_name_overlap
+    )
+    stats = {"candidates": len(pairs), "merged": 0, "failed": 0, "skipped": 0}
+
+    print(f"\n  意味的重複候補: {len(pairs)} ペア (threshold={threshold}, model={embed_model})", flush=True)
+    if dry_run:
+        print("  [DRY-RUN] 変更なし — 確認後 --no-dry-run で実行\n", flush=True)
+
     for na, nb, sim in pairs:
         canonical = _pick_canonical([na, nb])
         alias = nb if canonical == na else na
-        print(f"  sim={sim:.3f}  '{alias}' → '{canonical}'", flush=True)
+        overlap = _name_token_overlap(na, nb)
+        print(f"  sim={sim:.3f}  overlap={overlap:.2f}  '{alias}' → '{canonical}'", flush=True)
 
         if dry_run:
-            stats["merged"] += 1
+            stats["skipped"] += 1
             continue
         try:
             _rename_entity(client, alias, canonical)
@@ -338,13 +370,18 @@ def main() -> None:
         default=",".join(_DEFAULT_TYPES),
         help="対象エンティティタイプ（カンマ区切り）",
     )
-    parser.add_argument("--dry-run", action="store_true", help="変更を加えず結果だけ表示")
-    parser.add_argument("--embed", action="store_true", help="埋め込みクラスタリングも実行")
+    parser.add_argument("--dry-run", action="store_true", help="Phase 1/1b を dry-run（変更なし）")
+    parser.add_argument("--embed", action="store_true", help="Phase 2: 埋め込みクラスタリングも実行")
     parser.add_argument(
         "--threshold", type=float, default=_EMBED_THRESHOLD,
         help=f"埋め込み類似度の閾値（デフォルト: {_EMBED_THRESHOLD}）",
     )
-    parser.add_argument("--embed-model", default="nomic-embed-text", help="Ollama 埋め込みモデル")
+    parser.add_argument("--embed-model", default="mxbai-embed-large", help="Ollama 埋め込みモデル")
+    parser.add_argument(
+        "--embed-merge", action="store_true",
+        help="Phase 2 で実際にマージを実行（デフォルトは候補表示のみ）",
+    )
+    parser.add_argument("--min-name-overlap", type=float, default=0.0, help="名前トークン重複率の下限（0=無効）")
     parser.add_argument("--limit", type=int, default=500, help="埋め込みフェーズの処理件数上限")
     args = parser.parse_args()
 
@@ -360,14 +397,19 @@ def main() -> None:
         print(f"  結果: {stats1b}")
 
         if args.embed:
+            # Phase 2 は --embed-merge を明示しない限り dry-run（候補表示のみ）
+            embed_dry_run = not args.embed_merge
             print("\n=== Phase 2: 埋め込みクラスタリング ===")
+            if embed_dry_run:
+                print("  [DRY-RUN] 候補表示のみ。実際にマージするには --embed-merge を追加してください。")
             stats2 = merge_embedding_duplicates(
                 client,
                 types=types,
                 threshold=args.threshold,
                 embed_model=args.embed_model,
-                dry_run=args.dry_run,
+                dry_run=embed_dry_run,
                 limit=args.limit,
+                min_name_overlap=args.min_name_overlap,
             )
             print(f"  結果: {stats2}")
 
