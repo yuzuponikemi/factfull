@@ -1,29 +1,20 @@
 """
 Truth ソースをチャンク化して BM25 インデックスを構築する。
+
+チャンキングの実装は factfull.ingest.chunker に委譲。
+Chunk / _tokenize は後方互換のため再エクスポートする。
 """
 from __future__ import annotations
-import re
-from dataclasses import dataclass
+
 from pathlib import Path
-from typing import List
 
 from rank_bm25 import BM25Okapi  # type: ignore
 
+from factfull.ingest.chunker import Chunk, chunk_by_chars, tokenize as _tokenize_fn
 
-@dataclass
-class Chunk:
-    text: str
-    source: str   # ファイル名
-    offset: int   # テキスト内の先頭位置
-
-
+# 後方互換エイリアス
 def _tokenize(text: str) -> list[str]:
-    """日本語・英語混在対応の簡易トークナイザ。"""
-    # 英数字はそのまま、日本語は1文字ずつ
-    tokens: list[str] = []
-    for m in re.finditer(r"[A-Za-z0-9]+|[^\s]", text):
-        tokens.append(m.group().lower())
-    return tokens
+    return _tokenize_fn(text)
 
 
 def build_index(
@@ -42,17 +33,11 @@ def build_index(
             text = path.read_text(encoding="utf-8")
         except Exception:
             continue
-        start = 0
-        while start < len(text):
-            end = min(start + chunk_size, len(text))
-            chunks.append(Chunk(text=text[start:end], source=path.name, offset=start))
-            if end == len(text):
-                break
-            start += chunk_size - overlap
+        chunks.extend(chunk_by_chars(text, source=path.name, chunk_size=chunk_size, overlap=overlap))
 
     if not chunks:
         raise ValueError("Truth ソースにテキストが見つかりません")
 
-    tokenized = [_tokenize(c.text) for c in chunks]
+    tokenized = [_tokenize_fn(c.text) for c in chunks]
     bm25 = BM25Okapi(tokenized)
     return bm25, chunks

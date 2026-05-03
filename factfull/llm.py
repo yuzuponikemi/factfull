@@ -23,13 +23,14 @@ def call(
     max_retries: int = 6,
     retry_wait: int = 60,
     model: str | None = None,
+    num_predict: int = 8192,
 ) -> str:
     if BACKEND == "anthropic":
         return _call_anthropic(prompt)
     return _call_ollama(
         prompt, num_ctx=num_ctx, timeout=timeout,
         max_retries=max_retries, retry_wait=retry_wait,
-        model=model,
+        model=model, num_predict=num_predict,
     )
 
 
@@ -40,6 +41,7 @@ def _call_ollama(
     max_retries: int = 6,
     retry_wait: int = 60,
     model: str | None = None,
+    num_predict: int = 8192,
 ) -> str:
     import time
     # 実行時に env var を再読み取りすることで run_pipeline() からの動的切り替えに対応
@@ -49,7 +51,7 @@ def _call_ollama(
         "model": _model,
         "prompt": prompt,
         "stream": True,
-        "options": {"temperature": 0.1, "num_ctx": num_ctx},
+        "options": {"temperature": 0.1, "num_ctx": num_ctx, "num_predict": num_predict},
     }).encode("utf-8")
 
     last_err = None
