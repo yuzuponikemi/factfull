@@ -485,11 +485,13 @@ class PodcastArchiver:
         duration_str: str,
     ) -> str:
         """Pass 2a: 前半チャンクから論点を生成する"""
+        if not chunks:
+            return ""
         combined = "\n\n---\n\n".join(
             f"【区間{i+1}】\n{s}" for i, s in enumerate(chunks)
         )
         n = len(chunks)
-        n_min, n_max = max(5, n), max(7, n + 2)
+        n_min, n_max = max(2, min(n * 2, 5)), max(3, min(n * 3, 7))
         rules = self._pass2_section_prompt_rules(n_min, n_max)
 
         prompt = f"""あなたは「{self.blog_name}」というブログのポッドキャスト記事ライターです。
@@ -519,12 +521,14 @@ class PodcastArchiver:
         pass2a_text: str,
     ) -> str:
         """Pass 2b: 後半チャンクから論点を生成する（2aと重複しない）"""
+        if not chunks:
+            return ""
         import re as _re
         combined = "\n\n---\n\n".join(
             f"【区間{i + chunk_offset + 1}】\n{s}" for i, s in enumerate(chunks)
         )
         n = len(chunks)
-        n_min, n_max = max(5, n), max(7, n + 2)
+        n_min, n_max = max(2, min(n * 2, 5)), max(3, min(n * 3, 7))
         rules = self._pass2_section_prompt_rules(n_min, n_max)
 
         covered = _re.findall(r'^####\s+(.+)$', pass2a_text, _re.MULTILINE)
@@ -696,7 +700,8 @@ class PodcastArchiver:
         print(f"  英語引用: {len(en_quotes)}件")
 
         # --- Pass 2: 3フェーズ分割生成 ---
-        mid = len(chunk_summaries) // 2
+        # チャンクが1件のとき mid=0 になり chunks_first が空になるのを防ぐ
+        mid = max(1, len(chunk_summaries) // 2)
         chunks_first = chunk_summaries[:mid]
         chunks_second = chunk_summaries[mid:]
 
