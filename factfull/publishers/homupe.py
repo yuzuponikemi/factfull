@@ -18,6 +18,23 @@ from __future__ import annotations
 import json
 import os
 import re
+
+from factfull.publishers import ALLOWED_CATEGORIES
+
+
+def _validate_category(category: str) -> str:
+    if category not in ALLOWED_CATEGORIES:
+        raise ValueError(
+            f"Category {category!r} is not in ALLOWED_CATEGORIES: {ALLOWED_CATEGORIES}"
+        )
+    return category
+
+
+# モジュールロード時に ALLOWED_CATEGORIES との整合を検証する
+_CAT_PODCAST = _validate_category("Podcast")
+_CAT_BOOK_GUIDE = _validate_category("Book Guide")
+_CAT_SYNTHESIS = _validate_category("Synthesis")
+_CAT_RESEARCH = _validate_category("Research")
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -203,7 +220,7 @@ def create_blog_post(
     post = f"""---
 date: {meta.date}
 categories:
-  - Podcast
+  - {_CAT_PODCAST}
 tags:
 {tags_yaml}
 ---
@@ -600,7 +617,7 @@ def create_book_guide_post(
 title: {meta.title_ja}
 date: {meta.date}
 categories:
-  - Book Guide
+  - {_CAT_BOOK_GUIDE}
 tags:
 {tags_yaml}
 ---
@@ -673,7 +690,7 @@ def create_local_podcast_post(
     post = f"""---
 date: {meta.date}
 categories:
-  - Podcast
+  - {_CAT_PODCAST}
 tags:
 {tags_yaml}
 ---

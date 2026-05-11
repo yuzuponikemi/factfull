@@ -18,6 +18,9 @@ from typing import Any
 
 from factfull.graph.neo4j import Neo4jClient
 from factfull import llm
+from factfull.publishers import ALLOWED_CATEGORIES
+
+assert "Synthesis" in ALLOWED_CATEGORIES
 
 
 # ── Cypher クエリ ──────────────────────────────────────────────────────────────

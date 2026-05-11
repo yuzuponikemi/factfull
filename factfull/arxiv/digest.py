@@ -13,6 +13,8 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from factfull.publishers import ALLOWED_CATEGORIES
+
 from factfull.ingest.arxiv_feed import ArxivEntry
 
 
@@ -142,7 +144,7 @@ def render_digest_markdown(digest: DigestResult, kg_src: str) -> str:
 ---
 date: {digest.date}
 categories:
-  - AI論文
+  - Research
 tags:
 {tags_yaml}
 ---

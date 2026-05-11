@@ -19,6 +19,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from factfull.graph.neo4j import Neo4jClient
+from factfull.publishers import ALLOWED_CATEGORIES
+
+assert "Synthesis" in ALLOWED_CATEGORIES
 
 
 # ── データクラス ───────────────────────────────────────────────────────────────
