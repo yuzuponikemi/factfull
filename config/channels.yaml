@@ -1,0 +1,34 @@
+# factfull podcast channel registry
+# channel_id: YouTube channel ID (UC...)
+# max_per_run: max episodes to process in a single nightly run
+# lookback_days: ignore videos older than this (0 = no limit)
+# enabled: false to temporarily pause a channel
+
+channels:
+  - id: lex_fridman
+    name: "Lex Fridman Podcast"
+    channel_id: "UCSHZKyawb77ixDdsGog4iWA"
+    enabled: true
+    max_per_run: 2
+    lookback_days: 30
+
+  - id: dwarkesh_patel
+    name: "Dwarkesh Patel"
+    channel_id: "UCXl4i9dYBrFOabk0xGmbkRA"
+    enabled: true
+    max_per_run: 2
+    lookback_days: 30
+
+  - id: ycombinator
+    name: "Y Combinator"
+    channel_id: "UCcefcZRL2oaA_uBNeo5UOWg"
+    enabled: true
+    max_per_run: 1
+    lookback_days: 14
+
+  - id: a16z
+    name: "a16z"
+    channel_id: "UC9cn0TuPq4dnbTY-CBsm8XA"
+    enabled: false
+    max_per_run: 1
+    lookback_days: 14

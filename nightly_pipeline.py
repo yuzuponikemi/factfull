@@ -1,233 +1,384 @@
 """
 nightly_pipeline.py
 ====================
-深夜バッチ: 新着 YouTube エピソードを検出→処理→KG更新→インサイト生成。
+新着コンテンツを自動検出 → 記事生成 → homupe 投稿 → git push。
 
 フロー:
-  Phase 1: yt-dlp で各チャンネルの新着エピソードを検出
-  Phase 2: 新着エピソードを直列処理（translate→KG書き込み→homupe投稿）
-  Phase 3: 新着があった日のみ KG インサイトを再生成して homupe 投稿
+  Phase 0: arXiv 新着論文を取得 → KG 登録 → 日次ダイジェスト記事生成（平日のみ）
+  Phase 1: RSS フィードで新着エピソードを検出 → Registry に追加
+  Phase 2: pending エピソードを直列処理（translate → factcheck → KG → 記事投稿）
+  Phase 3: homupe の変更を git commit & push（--push 時のみ）
 
 使い方:
-    uv run python nightly_pipeline.py
-    uv run python nightly_pipeline.py --dry-run       # 検出のみ（処理しない）
-    uv run python nightly_pipeline.py --force-phase3  # 新着なしでも Phase 3 を実行
-
-crontab:
-    0 2 * * * cd /Users/ikmx/source/personal/factfull && uv run python nightly_pipeline.py >> /tmp/factfull_nightly.log 2>&1
+    uv run python nightly_pipeline.py                  # 通常実行
+    uv run python nightly_pipeline.py --dry-run        # 検出のみ（処理しない）
+    uv run python nightly_pipeline.py --push           # 処理後 homupe を git push
+    uv run python nightly_pipeline.py --max 1          # 1 件だけ処理
+    uv run python nightly_pipeline.py --channel lex_fridman  # 特定チャンネルのみ
+    uv run python nightly_pipeline.py --skip-arxiv     # arXiv フェーズをスキップ
+    uv run python nightly_pipeline.py --arxiv-only     # arXiv フェーズのみ実行
 """
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import yaml  # type: ignore
 
-# ── チャンネル設定 ──────────────────────────────────────────────────────────────
+
+# ── 設定読み込み ──────────────────────────────────────────────────────────────
+
+REPO_ROOT        = Path(__file__).parent
+CONFIG_PATH      = REPO_ROOT / "config" / "channels.yaml"
+ARXIV_CONFIG_PATH = REPO_ROOT / "config" / "arxiv_feeds.yaml"
+HOMUPE_ROOT      = Path(os.environ.get("HOMUPE_ROOT",
+                   str(Path.home() / "source" / "personal" / "homupe")))
+
 
 @dataclass
 class ChannelConfig:
+    id: str
     name: str
-    playlist_url: str            # YouTube playlist / channel URL
-    speakers: list[str] = field(default_factory=list)   # KG フィルタ用（任意）
-    max_new: int = 3             # 1回の実行で処理する上限
+    channel_id: str
+    enabled: bool = True
+    max_per_run: int = 2
+    lookback_days: int = 30
 
 
-CHANNELS: list[ChannelConfig] = [
-    ChannelConfig(
-        name="Lex Fridman Podcast",
-        playlist_url="https://www.youtube.com/@lexfridman/podcasts",
-        max_new=2,
-    ),
-    ChannelConfig(
-        name="Dwarkesh Podcast",
-        playlist_url="https://www.youtube.com/@DwarkeshPatel/videos",
-        max_new=2,
-    ),
-    ChannelConfig(
-        name="Y Combinator",
-        playlist_url="https://www.youtube.com/@ycombinator/videos",
-        max_new=2,
-    ),
-]
+def load_channels(path: Path = CONFIG_PATH) -> list[ChannelConfig]:
+    with open(path, encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    return [ChannelConfig(**ch) for ch in data["channels"]]
 
 
-# ── Phase 1: 新着検出 ─────────────────────────────────────────────────────────
-
-def _fetch_playlist_ids(playlist_url: str, max_entries: int = 30) -> list[dict[str, str]]:
-    """yt-dlp --flat-playlist で最新エントリのメタデータを返す。"""
-    cmd = [
-        "yt-dlp",
-        "--flat-playlist",
-        "--playlist-end", str(max_entries),
-        "--print", "%(id)s\t%(title)s\t%(upload_date)s",
-        "--no-warnings",
-        "--quiet",
-        playlist_url,
-    ]
-    try:
-        out = subprocess.check_output(cmd, text=True, timeout=60)
-    except subprocess.TimeoutExpired:
-        print(f"  [WARN] yt-dlp timeout: {playlist_url}", flush=True)
-        return []
-    except subprocess.CalledProcessError as e:
-        print(f"  [WARN] yt-dlp error ({e.returncode}): {playlist_url}", flush=True)
-        return []
-
-    entries = []
-    for line in out.strip().splitlines():
-        parts = line.split("\t", 2)
-        if len(parts) >= 2:
-            entries.append({
-                "video_id": parts[0].strip(),
-                "title": parts[1].strip() if len(parts) > 1 else "",
-                "upload_date": parts[2].strip() if len(parts) > 2 else "",
-            })
-    return entries
+@dataclass
+class ArxivFeedConfig:
+    categories: list[str]
+    papers_per_digest: int = 5
+    lookback_days: int = 1
+    max_per_category: int = 30
+    summarize_model: str = "gemma4:e4b"
 
 
-def _get_processed_ids(client) -> set[str]:
-    """Neo4j に登録済みの source_id を返す。"""
-    rows = client.run_cypher(
-        "MATCH (s:Source {source_type: 'podcast'}) RETURN s.source_id AS source_id"
+def load_arxiv_config(path: Path = ARXIV_CONFIG_PATH) -> ArxivFeedConfig:
+    with open(path, encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    enabled_cats = [c["id"] for c in data["categories"] if c.get("enabled", True)]
+    return ArxivFeedConfig(
+        categories=enabled_cats,
+        papers_per_digest=data.get("papers_per_digest", 5),
+        lookback_days=data.get("lookback_days", 1),
+        max_per_category=data.get("max_per_category", 30),
+        summarize_model=data.get("summarize_model", "gemma4:e4b"),
     )
-    return {r["source_id"] for r in rows}
 
 
-def detect_new_episodes(
-    channels: list[ChannelConfig],
-    client,
-) -> list[tuple[ChannelConfig, dict]]:
-    """各チャンネルの新着エピソード（未処理）をリストで返す。"""
-    processed = _get_processed_ids(client)
-    print(f"[Phase 1] 既処理エピソード: {len(processed)} 件", flush=True)
+# ── Pipeline 設定 ──────────────────────────────────────────────────────────────
 
-    new_episodes: list[tuple[ChannelConfig, dict]] = []
-    for ch in channels:
-        print(f"  チャンネル確認中: {ch.name}", flush=True)
-        entries = _fetch_playlist_ids(ch.playlist_url)
-        count = 0
-        for entry in entries:
-            vid = entry["video_id"]
-            if vid not in processed:
-                new_episodes.append((ch, entry))
-                count += 1
-                if count >= ch.max_new:
-                    break
-        print(f"  → 新着 {count} 件", flush=True)
+def _make_pipeline_config():
+    from factfull.podcast.pipeline import PipelineConfig
+    return PipelineConfig(
+        translate_model  = "translategemma:12b",
+        analyze_model    = "gemma4:26b",
+        extract_model    = "gemma4:26b",
+        factcheck_model  = "gemma4:e4b",
+        editorial_model  = None,
+        threshold        = 95.0,
+        max_iter         = 5,
+        max_claims       = 50,
+        top_k            = 5,
+        critique         = True,
+        editorial        = True,
+        fetch_comments   = False,
+        write_graph      = True,
+        output_base      = Path.home() / "podcasts",
+        blog_name        = "SoryuNews",
+        reader_persona   = "英語圏情報にアクセスしたい日本語話者のエンジニア・研究者",
+        n_questions      = 4,
+    )
 
-    return new_episodes
+
+META_MODEL = "gemma4:e4b"
 
 
-# ── Phase 2: エピソード処理 ───────────────────────────────────────────────────
+# ── Phase 0: arXiv 日次ダイジェスト ──────────────────────────────────────────
 
-def _process_episode(
-    ch: ChannelConfig,
-    entry: dict,
-    config,
+def process_arxiv_papers(
+    arxiv_cfg: ArxivFeedConfig,
+    registry,
     blog_dir: Path,
     dry_run: bool = False,
 ) -> bool:
-    """1エピソードを処理して homupe に投稿。成功したら True を返す。"""
+    """arXiv 新着論文を取得 → KG 登録 → ダイジェスト記事を生成する。
+
+    平日のみ実行。ダイジェスト (arxiv_digest_YYYYMMDD) が既に登録済みなら即リターン。
+
+    Returns:
+        True if digest was created, False otherwise.
+    """
+    from datetime import date
+
+    today = date.today()
+
+    # 平日チェック (0=月 ... 4=金)
+    if today.weekday() >= 5:
+        print("  [arXiv] 土日 → スキップ")
+        return False
+
+    digest_id = f"arxiv_digest_{today.strftime('%Y%m%d')}"
+    if registry.exists("arxiv_digest", digest_id):
+        print(f"  [arXiv] 本日分 {digest_id} は処理済み → スキップ")
+        return False
+
+    from factfull.ingest.arxiv_feed import find_new_papers, fetch_conclusion
+    from factfull.extract.entity import extract_entities
+    from factfull.extract.relation import extract_relations
+    from factfull.core.types import SourceDoc, ProcessedDoc
+    from factfull.graph.neo4j import Neo4jClient
+    from factfull.arxiv.digest import summarize_paper, build_digest
+    from factfull.publishers.homupe import create_arxiv_digest_post
+
+    # Step 1: 新着論文取得
+    print(f"  [arXiv] カテゴリ {arxiv_cfg.categories} から最新論文を取得中...")
+    papers = find_new_papers(
+        categories=arxiv_cfg.categories,
+        registry=registry,
+        papers_per_digest=arxiv_cfg.papers_per_digest,
+        lookback_days=arxiv_cfg.lookback_days,
+        max_per_category=arxiv_cfg.max_per_category,
+    )
+
+    if not papers:
+        print("  [arXiv] 新着論文なし → スキップ")
+        return False
+
+    print(f"  [arXiv] {len(papers)} 件の新着論文を処理します")
+    if dry_run:
+        for p in papers:
+            print(f"    [DRY-RUN] {p.paper_id}: {p.title[:60]}")
+        return False
+
+    # Step 2: Conclusion 取得 + エンティティ抽出 → Neo4j
+    model = arxiv_cfg.summarize_model
+    processed: list = []
+
+    with Neo4jClient() as client:
+        for paper in papers:
+            print(f"\n  📄 [{paper.paper_id}] {paper.title[:55]}...")
+            registry.add("arxiv", paper.paper_id, title=paper.title)
+            registry.mark_processing("arxiv", paper.paper_id)
+
+            try:
+                # Conclusion 取得
+                print(f"    → conclusion 取得中...")
+                paper.conclusion = fetch_conclusion(paper.paper_id)
+                if paper.conclusion:
+                    print(f"    → {len(paper.conclusion)} 文字")
+                else:
+                    print(f"    → (取得できず、abstract のみ使用)")
+
+                # テキスト = abstract + conclusion
+                source_text = f"{paper.abstract}\n\n{paper.conclusion}".strip()
+                source_id = f"arxiv_{paper.paper_id}"
+
+                # エンティティ・関係抽出
+                chunks = [source_text]
+                entities = extract_entities(chunks, source_id=source_id, model=model)
+                print(f"    → entities: {len(entities)}")
+                relations = extract_relations(chunks, entities, source_id=source_id, model=model)
+                print(f"    → relations: {len(relations)}")
+
+                # Neo4j 書き込み
+                source = SourceDoc(
+                    source_type="arxiv",
+                    source_id=source_id,
+                    title=paper.title,
+                    text=source_text,
+                    metadata={
+                        "paper_id": paper.paper_id,
+                        "authors": paper.authors[:5],
+                        "categories": paper.categories,
+                        "arxiv_url": paper.arxiv_url,
+                        "published": paper.published.isoformat() if paper.published else "",
+                    },
+                )
+                pdoc = ProcessedDoc(source=source, entities=entities, triples=relations)
+                client.write_processed_doc(pdoc, clear_old=True)
+
+                registry.mark_done("arxiv", paper.paper_id, graph_written=True)
+                processed.append(paper)
+
+            except Exception as e:
+                err = f"{type(e).__name__}: {e}"
+                print(f"    [ERROR] {err}", file=sys.stderr)
+                registry.mark_failed("arxiv", paper.paper_id, error=err)
+
+    if not processed:
+        print("  [arXiv] 処理成功論文なし → ダイジェスト生成スキップ")
+        return False
+
+    # Step 3: 日本語要約 → ダイジェスト生成
+    print(f"\n  [arXiv] 日本語要約を生成中 ({len(processed)} 件)...")
+    summaries = []
+    for paper in processed:
+        print(f"    → {paper.paper_id}: {paper.title[:50]}...")
+        ps = summarize_paper(paper, model=model)
+        summaries.append(ps)
+
+    date_str = today.strftime("%Y-%m-%d")
+    digest = build_digest(summaries, date=date_str, model=model)
+
+    # Step 4: 記事生成 → homupe
+    print(f"\n  [arXiv] ダイジェスト記事を生成中...")
+    post_path = create_arxiv_digest_post(digest, blog_dir=blog_dir)
+
+    registry.add("arxiv_digest", digest_id, title=f"arXiv ダイジェスト {date_str}")
+    registry.mark_done("arxiv_digest", digest_id, graph_written=True)
+
+    print(f"  ✅ [arXiv] ダイジェスト完了: {post_path.name}")
+    return True
+
+
+# ── Phase 1: 新着検出 → Registry ──────────────────────────────────────────────
+
+def scan_feeds(
+    channels: list[ChannelConfig],
+    registry,
+    channel_filter: str | None = None,
+) -> int:
+    """RSS を巡回して新着を Registry に追加。追加件数を返す。"""
+    from factfull.ingest.youtube_feed import find_new_entries
+
+    added = 0
+    for ch in channels:
+        if not ch.enabled:
+            continue
+        if channel_filter and ch.id != channel_filter:
+            continue
+
+        new_entries = find_new_entries(
+            channel_id   = ch.channel_id,
+            channel_name = ch.name,
+            registry     = registry,
+            lookback_days= ch.lookback_days,
+            max_new      = ch.max_per_run,
+        )
+
+        for entry in new_entries:
+            if registry.add("podcast", entry.video_id, title=entry.title):
+                print(f"  + 追加: [{ch.name}] {entry.title} ({entry.video_id})")
+                added += 1
+            # else: すでに存在（skip_if_exists=True なので問題なし）
+
+        total = len(new_entries)
+        print(f"  {ch.name}: 新着 {total} 件 / 追加 {sum(1 for e in new_entries if registry.exists('podcast', e.video_id))} 件")
+
+    return added
+
+
+# ── Phase 2: pending 処理 ─────────────────────────────────────────────────────
+
+def process_pending(
+    registry,
+    blog_dir: Path,
+    max_episodes: int = 6,
+    dry_run: bool = False,
+) -> tuple[int, int]:
+    """
+    Registry の pending エピソードを処理する。
+
+    Returns:
+        (成功件数, 失敗件数)
+    """
     from factfull.podcast.pipeline import run_pipeline
     from factfull.publishers.homupe import generate_blog_metadata, create_blog_post
 
-    vid = entry["video_id"]
-    url = f"https://www.youtube.com/watch?v={vid}"
-    title = entry.get("title", vid)
+    pending = registry.pending("podcast")[:max_episodes]
+    if not pending:
+        print("  pending なし")
+        return 0, 0
 
-    print(f"\n  [Episode] {title}", flush=True)
-    print(f"  URL: {url}", flush=True)
+    print(f"  処理対象: {len(pending)} 件（上限 {max_episodes}）")
+    pipeline_config = _make_pipeline_config()
 
-    if dry_run:
-        print("  [DRY-RUN] スキップ", flush=True)
-        return False
+    ok = fail = 0
+    for item in pending:
+        vid = item["source_id"]
+        title = item.get("title") or vid
+        url = f"https://www.youtube.com/watch?v={vid}"
 
-    try:
-        result = run_pipeline(config, url)
-        print(f"  → score={result.score:.1f}  KG書き込み完了", flush=True)
+        print(f"\n  ▶ [{vid}] {title[:60]}")
 
-        meta = generate_blog_metadata(result, model=config.analyze_model)
-        post_path = create_blog_post(result, meta, blog_dir=blog_dir)
-        print(f"  → 投稿: {post_path}", flush=True)
-        return True
+        if dry_run:
+            print("    [DRY-RUN] スキップ")
+            continue
 
-    except Exception as e:
-        print(f"  [ERROR] {type(e).__name__}: {e}", flush=True)
-        return False
+        registry.mark_processing("podcast", vid)
+        try:
+            result = run_pipeline(pipeline_config, url)
+            print(f"    score={result.score:.0f}  KG=✓")
 
+            meta = generate_blog_metadata(result, model=META_MODEL)
+            post_path = create_blog_post(result, meta, blog_dir=blog_dir)
+            print(f"    投稿: {post_path.name}")
 
-def process_episodes(
-    new_episodes: list[tuple[ChannelConfig, dict]],
-    blog_dir: Path,
-    dry_run: bool = False,
-) -> int:
-    """新着エピソードを直列で処理。成功件数を返す。"""
-    from factfull.podcast.pipeline import PipelineConfig
-
-    config = PipelineConfig(
-        write_graph=True,
-        analyze_model="gemma4:26b",
-        translate_model="translategemma:12b",
-        factcheck_model="gemma4:e4b",
-    )
-
-    ok = 0
-    for ch, entry in new_episodes:
-        success = _process_episode(ch, entry, config, blog_dir, dry_run=dry_run)
-        if success:
+            registry.mark_done(
+                "podcast", vid,
+                title=result.title,
+                graph_written=pipeline_config.write_graph,
+            )
             ok += 1
-    return ok
+
+        except Exception as e:
+            err = f"{type(e).__name__}: {e}"
+            print(f"    [ERROR] {err}", file=sys.stderr)
+            registry.mark_failed("podcast", vid, error=err)
+            fail += 1
+
+    return ok, fail
 
 
-# ── Phase 3: KG インサイト生成 ────────────────────────────────────────────────
+# ── Phase 3: homupe git push ──────────────────────────────────────────────────
 
-def run_kg_insights(
-    client,
-    blog_dir: Path,
-    model: str = "gemma4:26b",
-    dry_run: bool = False,
-) -> None:
-    """KG インサイトを生成して homupe に投稿する。"""
-    from factfull.synthesis.kg_analysis import analyze_and_generate
+def git_push_homupe(homupe_root: Path, dry_run: bool = False) -> bool:
+    """homupe の変更を add → commit → push する。変更がなければ何もしない。"""
+    def run(cmd: list[str]) -> subprocess.CompletedProcess:
+        return subprocess.run(cmd, cwd=str(homupe_root), capture_output=True, text=True)
 
-    print("\n[Phase 3] KG インサイト生成中...", flush=True)
+    # 変更確認
+    status = run(["git", "status", "--porcelain"])
+    if not status.stdout.strip():
+        print("  homupe: 変更なし")
+        return False
+
+    changed_files = status.stdout.strip().splitlines()
+    print(f"  homupe: {len(changed_files)} ファイル変更あり")
 
     if dry_run:
-        print("  [DRY-RUN] スキップ", flush=True)
-        return
+        print("  [DRY-RUN] git push をスキップ")
+        return False
 
-    insight_text = analyze_and_generate(client, model=model, min_bridge_speakers=2)
-    print(f"  → 生成完了: {len(insight_text)} 文字", flush=True)
+    today = datetime.now().strftime("%Y-%m-%d")
+    msg = f"feat: nightly articles {today}"
 
-    today = date.today()
-    slug = f"{today.isoformat()}-kg-insights"
-    filename = f"{slug}.md"
-    post_path = blog_dir / filename
+    run(["git", "add", "docs/blog/posts/", "docs/data/kg/", "docs/data/synthesis/"])
+    commit = run(["git", "commit", "-m", msg])
+    if commit.returncode != 0:
+        print(f"  [WARN] git commit 失敗: {commit.stderr.strip()}")
+        return False
 
-    frontmatter = f"""---
-date: {today.isoformat()}
-categories:
-  - Synthesis
-tags:
-  - AI
-  - ナレッジグラフ
-  - 合成記事
-  - KG解析
----
+    push = run(["git", "push"])
+    if push.returncode != 0:
+        print(f"  [WARN] git push 失敗: {push.stderr.strip()}")
+        return False
 
-# KG インサイト — {today.isoformat()}
-
-<!-- more -->
-
-"""
-    post_path.write_text(frontmatter + insight_text, encoding="utf-8")
-    print(f"  → 保存: {post_path}", flush=True)
+    print(f"  ✅ homupe push 完了: {msg}")
+    return True
 
 
 # ── メイン ────────────────────────────────────────────────────────────────────
@@ -235,65 +386,83 @@ tags:
 def main() -> None:
     import argparse
 
-    parser = argparse.ArgumentParser(description="factfull 夜間パイプライン")
-    parser.add_argument("--dry-run", action="store_true",
-                        help="新着検出のみ（処理・投稿しない）")
-    parser.add_argument("--force-phase3", action="store_true",
-                        help="新着なしでも Phase 3 を実行")
-    parser.add_argument("--model", default="gemma4:26b",
-                        help="Phase 3 で使用するモデル")
-    parser.add_argument("--channels", default=None,
-                        help="処理するチャンネル名（カンマ区切り、デフォルト:全チャンネル）")
+    parser = argparse.ArgumentParser(
+        description="factfull 夜間ポッドキャストパイプライン",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    parser.add_argument("--dry-run",    action="store_true", help="検出のみ（処理・投稿しない）")
+    parser.add_argument("--push",       action="store_true", help="処理後 homupe を git push")
+    parser.add_argument("--max",        type=int, default=6,  help="1回の実行で処理する上限（default: 6）")
+    parser.add_argument("--channel",    default=None, help="チャンネル ID で絞り込み（例: lex_fridman）")
+    parser.add_argument("--skip-scan",  action="store_true", help="RSS スキャンをスキップして pending のみ処理")
+    parser.add_argument("--skip-arxiv", action="store_true", help="arXiv フェーズをスキップ")
+    parser.add_argument("--arxiv-only", action="store_true", help="arXiv フェーズのみ実行（podcast をスキップ）")
     args = parser.parse_args()
 
     # 環境変数デフォルト
-    os.environ.setdefault("NEO4J_URI", "bolt://localhost:7687")
-    os.environ.setdefault("NEO4J_USER", "neo4j")
+    os.environ.setdefault("NEO4J_URI",      "bolt://localhost:7687")
+    os.environ.setdefault("NEO4J_USER",     "neo4j")
     os.environ.setdefault("NEO4J_PASSWORD", "factfull123")
     os.environ.setdefault("FACTFULL_LLM_BACKEND", "ollama")
 
     started_at = datetime.now()
-    print(f"\n{'='*60}", flush=True)
-    print(f"[nightly_pipeline] 開始: {started_at:%Y-%m-%d %H:%M:%S}", flush=True)
-    print(f"{'='*60}", flush=True)
+    print(f"\n{'='*60}")
+    print(f"[nightly] 開始: {started_at:%Y-%m-%d %H:%M:%S}")
+    print(f"{'='*60}")
 
-    channels = CHANNELS
-    if args.channels:
-        names = {n.strip() for n in args.channels.split(",")}
-        channels = [c for c in CHANNELS if c.name in names]
-        print(f"チャンネル絞り込み: {[c.name for c in channels]}", flush=True)
-
-    from factfull.graph.neo4j import Neo4jClient
+    from factfull.registry import Registry
     from factfull.publishers.homupe import default_blog_dir
 
-    blog_dir = default_blog_dir()
+    channels    = load_channels()
+    arxiv_cfg   = load_arxiv_config()
+    blog_dir    = default_blog_dir(HOMUPE_ROOT)
     blog_dir.mkdir(parents=True, exist_ok=True)
 
-    with Neo4jClient() as client:
-        # Phase 1
-        print("\n[Phase 1] 新着エピソード検出", flush=True)
-        new_episodes = detect_new_episodes(channels, client)
-        print(f"\n  合計新着: {len(new_episodes)} 件", flush=True)
+    arxiv_created = False
+    ok = fail = 0
 
-        if not new_episodes:
-            print("  新着なし。", flush=True)
-            if args.force_phase3:
-                run_kg_insights(client, blog_dir, model=args.model, dry_run=args.dry_run)
-            print("\n[nightly_pipeline] 完了（新着なし）", flush=True)
-            return
+    with Registry() as reg:
+        # ── Phase 0: arXiv ダイジェスト ──
+        if not args.skip_arxiv:
+            print("\n[Phase 0] arXiv 日次ダイジェスト（平日のみ）")
+            arxiv_created = process_arxiv_papers(
+                arxiv_cfg, reg, blog_dir, dry_run=args.dry_run
+            )
+        else:
+            print("\n[Phase 0] スキップ（--skip-arxiv）")
 
-        # Phase 2
-        print(f"\n[Phase 2] エピソード処理（直列、{len(new_episodes)} 件）", flush=True)
-        ok = process_episodes(new_episodes, blog_dir, dry_run=args.dry_run)
-        print(f"\n[Phase 2] 完了: 成功 {ok}/{len(new_episodes)} 件", flush=True)
+        if args.arxiv_only:
+            print("\n[--arxiv-only] Phase 1/2 をスキップ")
+        else:
+            # ── Phase 1: RSS スキャン ──
+            if not args.skip_scan:
+                print("\n[Phase 1] RSS スキャン")
+                added = scan_feeds(channels, reg, channel_filter=args.channel)
+                print(f"\n  合計追加: {added} 件")
+            else:
+                print("\n[Phase 1] スキップ（--skip-scan）")
 
-        # Phase 3: 新着があった日のみ
-        if ok > 0 or args.force_phase3:
-            run_kg_insights(client, blog_dir, model=args.model, dry_run=args.dry_run)
+            # ── Phase 2: pending 処理 ──
+            pending_count = len(reg.pending("podcast"))
+            print(f"\n[Phase 2] pending 処理（{pending_count} 件 / 上限 {args.max}）")
+            ok, fail = process_pending(reg, blog_dir, max_episodes=args.max, dry_run=args.dry_run)
+            print(f"\n[Phase 2] 完了: 成功 {ok}, 失敗 {fail}")
+
+        stats = reg.stats()
+        print(f"  Registry 状況: {stats['by_status']}")
+
+    # ── Phase 3: git push ──
+    any_new = ok > 0 or arxiv_created
+    if args.push and any_new:
+        print("\n[Phase 3] homupe git push")
+        git_push_homupe(HOMUPE_ROOT, dry_run=args.dry_run)
+    elif args.push and not any_new:
+        print("\n[Phase 3] 新規投稿なし — push スキップ")
 
     elapsed = (datetime.now() - started_at).total_seconds()
-    print(f"\n[nightly_pipeline] 完了: {elapsed:.0f}秒", flush=True)
-    print(f"{'='*60}\n", flush=True)
+    print(f"\n[nightly] 完了: {elapsed:.0f}秒")
+    print(f"{'='*60}\n")
 
 
 if __name__ == "__main__":

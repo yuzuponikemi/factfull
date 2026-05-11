@@ -152,6 +152,10 @@ def _extract_author_title(book_id: str, subject: str) -> tuple[str, str]:
         "kaiwa_0_2_byou": ("水野", "会話の0.2秒を言語学する"),
         "kaze_no_tani": ("安宅和人", "「風の谷」という希望"),
         "plurality": ("Tang / Weyl", "⿻数位（Plurality）"),
+        "baudrillard_consumer_society": ("Baudrillard", "消費社会の神話と構造"),
+        "debord_spectacle": ("Debord", "スペクタクルの社会"),
+        "veblen_leisure_class": ("Veblen", "有閑階級の理論"),
+        "zuboff_surveillance_capitalism": ("Zuboff", "監視資本主義の時代"),
     }
     if book_id in known:
         return known[book_id]
@@ -167,24 +171,38 @@ def _build_truth_source(run_dir: Path, source_mode: str) -> Path:
     """
     ファクトチェックの真実ソースとなる book_source.txt を構築する。
 
-    - Route A (gutenberg): 01_chunks.json のチャンクテキストを結合
-    - Route B (web_researcher): 03_concept_graph.json の概念・関係・アポリアを結合
+    優先順位:
+      1. 01_chunks.json       — Route A: 原著テキスト（最も確実）
+      2. web_search_results.json — Route B: web_researcher が収集した生コンテンツ
+      3. 03_concept_graph.json   — フォールバック: 構造化概念グラフ
+
+    Route B で web_search_results.json がある場合、synthesized chunks を
+    テキスト化して真実ソースとする。各 chunk には source URL が含まれるため
+    "どのソースに基づく主張か" の provenance も確認可能。
     """
     truth_path = run_dir / "book_source.txt"
     if truth_path.exists():
         print(f"   [truth] 既存の book_source.txt を使用 ({truth_path.stat().st_size:,} bytes)")
         return truth_path
 
+    # 1. Route A: 原著テキスト
     chunks_path = run_dir / "01_chunks.json"
     if chunks_path.exists():
         truth_text = _chunks_to_text(chunks_path)
-        print(f"   [truth] 01_chunks.json から book_source.txt を生成 ({len(truth_text):,} 文字)")
-    else:
-        cg_path = run_dir / "03_concept_graph.json"
-        if not cg_path.exists():
-            raise FileNotFoundError(f"真実ソースが見つかりません: {run_dir}")
+        print(f"   [truth] Route A — 01_chunks.json ({len(truth_text):,} 文字)")
+
+    # 2. Route B: web_search_results.json（生コンテンツ）
+    elif (web_path := run_dir / "web_search_results.json").exists():
+        truth_text = _web_search_results_to_text(web_path)
+        print(f"   [truth] Route B — web_search_results.json ({len(truth_text):,} 文字)")
+
+    # 3. フォールバック: concept_graph
+    elif (cg_path := run_dir / "03_concept_graph.json").exists():
         truth_text = _concept_graph_to_text(cg_path)
-        print(f"   [truth] 03_concept_graph.json から book_source.txt を生成 ({len(truth_text):,} 文字)")
+        print(f"   [truth] フォールバック — 03_concept_graph.json ({len(truth_text):,} 文字)")
+
+    else:
+        raise FileNotFoundError(f"真実ソースが見つかりません: {run_dir}")
 
     truth_path.write_text(truth_text, encoding="utf-8")
     return truth_path
@@ -202,6 +220,42 @@ def _chunks_to_text(chunks_path: Path) -> str:
             parts.append(f"## {heading}\n\n{text}")
         else:
             parts.append(text)
+    return "\n\n---\n\n".join(parts)
+
+
+def _web_search_results_to_text(web_path: Path) -> str:
+    """web_search_results.json の synthesized chunks をテキスト化する。
+
+    各 chunk の summary_text（LLM が複数の web ページから統合した要約）と
+    source URLs を含むため、factcheck の BM25 検索に使いやすい形式になる。
+    """
+    data = json.loads(web_path.read_text(encoding="utf-8"))
+    parts: list[str] = []
+
+    subject = data.get("subject", "")
+    if subject:
+        parts.append(f"# Subject\n\n{subject}")
+
+    for chunk in data.get("chunks", []):
+        title = chunk.get("heading_title", "")
+        text = chunk.get("summary_text", "").strip()
+        sources = chunk.get("sources", [])
+        if not text:
+            continue
+        section = f"## {title}\n\n{text}" if title else text
+        if sources:
+            section += "\n\nSources: " + ", ".join(sources)
+        parts.append(section)
+
+    # raw_results も補足として含める（BM25 の検索範囲を広げる）
+    for hid, results in data.get("raw_results", {}).items():
+        for r in results:
+            body = r.get("body", "").strip()
+            url = r.get("url", "")
+            title = r.get("title", "")
+            if body:
+                parts.append(f"[{title}] ({url})\n{body}")
+
     return "\n\n---\n\n".join(parts)
 
 

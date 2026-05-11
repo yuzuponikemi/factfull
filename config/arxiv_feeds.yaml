@@ -1,0 +1,18 @@
+categories:
+  - id: cs.AI
+    name: "Artificial Intelligence"
+    enabled: true
+  - id: cs.LG
+    name: "Machine Learning"
+    enabled: true
+  - id: cs.CL
+    name: "Computation and Language"
+    enabled: true
+  - id: cs.CV
+    name: "Computer Vision"
+    enabled: false
+
+papers_per_digest: 5
+lookback_days: 1
+max_per_category: 30
+summarize_model: "gemma4:e4b"

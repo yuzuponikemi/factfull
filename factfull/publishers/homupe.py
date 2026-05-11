@@ -214,8 +214,14 @@ tags:
 
 <!-- more -->
 
+## 概念グラフ
+ポッドキャストの主要概念と関係をグラフで表示しています。ノードにカーソルを当てると詳細が表示されます。
+
+<div class="kg-widget" data-src="/data/kg/{result.video_id}.json" data-height="630"></div>
+
 {summary.strip()}
 """
+    _export_kg_json(result.video_id, blog_dir)
     out_path.write_text(post, encoding="utf-8")
     print(f"  ✅ 作成: {out_path}")
     print(f"     タイトル: {meta.title_ja}")
@@ -452,6 +458,32 @@ def _default_slug(title_en: str) -> str:
     return slug[:60]
 
 
+def _export_kg_json(source_id: str, blog_dir: Path) -> bool:
+    """Neo4j から KG JSON を homupe/docs/data/kg/ に書き出す。接続不能時は黙って False を返す。"""
+    try:
+        from factfull.export.book_graph import export_book_graph
+        from factfull.graph.neo4j import Neo4jClient
+
+        # blog_dir = .../homupe/docs/blog/posts/YYYY/MM → parents[4] = homupe root
+        homupe_root = blog_dir.resolve().parents[4]
+        out_dir = homupe_root / "docs" / "data" / "kg"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        os.environ.setdefault("NEO4J_PASSWORD", "factfull123")
+        with Neo4jClient() as client:
+            data = export_book_graph(source_id, client)
+
+        out_path = out_dir / f"{source_id}.json"
+        out_path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        print(f"  ✅ KG JSON: {out_path.name}  nodes={len(data['nodes'])}  links={len(data['links'])}")
+        return True
+    except Exception as e:
+        print(f"  ⚠️  KG JSON エクスポートをスキップ（{e}）")
+        return False
+
+
 # ── Book Guide Publisher ───────────────────────────────────────────────────────
 
 _BOOK_META_PROMPT = """\
@@ -573,16 +605,145 @@ tags:
 {tags_yaml}
 ---
 
+# 読書メモ：{result.author}『{result.book_title}』ブックガイド
+
 {meta.excerpt}
 
 <!-- more -->
 
+## 概念グラフ
+本書の核心概念と概念間の依存・矛盾・発展関係をグラフで表示しています。ノードにカーソルを当てると詳細が表示されます。
+
+<div class="kg-widget" data-src="/data/kg/{result.book_id}.json" data-height="630"></div>
+
 {guide_text.strip()}
 """
+    _export_kg_json(result.book_id, blog_dir)
     out_path.write_text(post, encoding="utf-8")
     print(f"  ✅ 作成: {out_path}")
     print(f"     タイトル: {meta.title_ja}")
     print(f"     スコア: {result.score:.0f}/100")
+
+    return out_path
+
+
+def create_local_podcast_post(
+    result: PipelineResult,
+    meta: BlogMetadata,
+    blog_dir: Path,
+) -> Path:
+    """ローカル音声ポッドキャスト記事を homupe ブログに書き出す（YouTube なし版）。
+
+    create_blog_post() との違い: YouTube 埋め込みなし。チャンネル名・エピソード情報を表示。
+
+    Args:
+        result: run_local_pipeline() の戻り値 (PipelineResult)
+        meta: generate_blog_metadata() または手動で作った BlogMetadata
+        blog_dir: ブログ記事の出力先ディレクトリ
+
+    Returns:
+        作成した .md ファイルのパス
+    """
+    out_path = blog_dir / f"{meta.slug}.md"
+
+    if out_path.exists():
+        print(f"  スキップ（既存）: {out_path.name}")
+        return out_path
+
+    blog_dir.mkdir(parents=True, exist_ok=True)
+
+    summary = result.summary_path.read_text(encoding="utf-8")
+    if meta.guest:
+        summary = _insert_guest(summary, meta.guest)
+
+    tags_yaml = "\n".join(f"  - {t}" for t in meta.tags)
+
+    # エピソード情報
+    duration = result.metadata.get("duration", "") if result.metadata else ""
+    pub_date_ep = result.metadata.get("pub_date", "") if result.metadata else ""
+    ep_info_lines = []
+    if result.channel:
+        ep_info_lines.append(f"**チャンネル**: {result.channel}")
+    if pub_date_ep:
+        ep_info_lines.append(f"**配信日**: {pub_date_ep}")
+    if duration:
+        ep_info_lines.append(f"**再生時間**: {duration}")
+    ep_info = "  \n".join(ep_info_lines)
+
+    post = f"""---
+date: {meta.date}
+categories:
+  - Podcast
+tags:
+{tags_yaml}
+---
+
+# {meta.title_ja}
+
+{meta.excerpt}
+
+<!-- more -->
+
+{ep_info}
+
+## 概念グラフ
+ポッドキャストの主要概念と関係をグラフで表示しています。ノードにカーソルを当てると詳細が表示されます。
+
+<div class="kg-widget" data-src="/data/kg/{result.video_id}.json" data-height="630"></div>
+
+{summary.strip()}
+"""
+    _export_kg_json(result.video_id, blog_dir)
+    out_path.write_text(post, encoding="utf-8")
+    print(f"  ✅ 作成: {out_path}")
+    print(f"     タイトル: {meta.title_ja}")
+    print(f"     スコア: {result.score:.0f}/100")
+
+    return out_path
+
+
+def create_arxiv_digest_post(
+    digest,              # factfull.arxiv.digest.DigestResult
+    blog_dir: Path,
+) -> Path:
+    """arXiv ダイジェスト記事を homupe ブログに書き出す。
+
+    Args:
+        digest: DigestResult (factfull.arxiv.digest)
+        blog_dir: 書き出し先ディレクトリ（例: homupe/docs/blog/posts/2026/05/）
+
+    Returns:
+        書き出した .md ファイルのパス
+    """
+    from factfull.arxiv.digest import render_digest_markdown
+    from factfull.export.arxiv_graph import export_arxiv_digest_graph
+    from factfull.graph.neo4j import Neo4jClient
+
+    blog_dir.mkdir(parents=True, exist_ok=True)
+
+    # KG JSON を生成して homupe/docs/data/kg/ に書き出す
+    kg_source_ids = [f"arxiv_{ps.entry.paper_id}" for ps in digest.papers]
+    kg_json_name = digest.digest_id  # "arxiv_digest_20260507"
+
+    homupe_root = blog_dir.resolve().parents[4]
+    kg_dir = homupe_root / "docs" / "data" / "kg"
+    kg_dir.mkdir(parents=True, exist_ok=True)
+    kg_path = kg_dir / f"{kg_json_name}.json"
+
+    os.environ.setdefault("NEO4J_PASSWORD", "factfull123")
+    with Neo4jClient() as client:
+        kg_data = export_arxiv_digest_graph(kg_source_ids, digest.digest_id, client)
+    kg_path.write_text(
+        json.dumps(kg_data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    print(f"  ✅ KG JSON: {kg_json_name}.json  nodes={len(kg_data['nodes'])}  links={len(kg_data['links'])}")
+
+    # Markdown 記事を生成
+    md = render_digest_markdown(digest, kg_src=kg_json_name)
+    slug = f"{digest.date}-arxiv-digest"
+    out_path = blog_dir / f"{slug}.md"
+    out_path.write_text(md, encoding="utf-8")
+    print(f"  ✅ 作成: {out_path}")
 
     return out_path
 
