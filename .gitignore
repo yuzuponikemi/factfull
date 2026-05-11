@@ -1,5 +1,32 @@
+# Python
 .venv/
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
+*.egg-info/
+
+# Build / packaging
+dist/
+build/
+
+# macOS
 .DS_Store
+
+# IDE
+.idea/
+.vscode/settings.json
+
+# Local config
+.env
+.envrc
+
+# Claude Code runtime state
+.claude/scheduled_tasks.lock
+
+# OS-specific / system integration
+config/launchd/
+
+# Runtime outputs
+logs/
+*.log
