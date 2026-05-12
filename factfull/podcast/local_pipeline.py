@@ -79,7 +79,9 @@ def run_local_pipeline(
         mp3_path:     MP3 ファイルパス
         episode_meta: タイトル・日付など（rss_downloader の .json から）
                       なければ mp3 のファイル名から推測
-        regen:        既存 transcript がある場合は Whisper をスキップ
+        regen:        既存ファイルを再利用してステップをスキップ
+                        - transcript_{lang}.txt があれば Whisper をスキップ
+                        - summary_ja.md があれば要約生成をスキップ
 
     Returns:
         PipelineResult（YouTube 版と同一）
@@ -124,10 +126,14 @@ def run_local_pipeline(
     if not en_path.exists():
         en_path.write_text(transcript_text, encoding="utf-8")
 
-    # Step 3: 要約生成（PodcastArchiver を注入して再利用）
-    print(f"\n📊 Step 2: 要約生成...")
-    arch = _build_archiver(config, meta, out_dir, transcript_text)
-    arch.generate_summary()
+    # Step 3: 要約生成（regen かつ summary_ja.md が既存ならスキップ）
+    summary_path = out_dir / "summary_ja.md"
+    if regen and summary_path.exists():
+        print(f"  [regen] 既存 summary を使用: {summary_path.name}")
+    else:
+        print(f"\n📊 Step 2: 要約生成...")
+        arch = _build_archiver(config, meta, out_dir, transcript_text)
+        arch.generate_summary()
 
     # Step 4: ファクトチェック
     print(f"\n{'='*60}")
