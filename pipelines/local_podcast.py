@@ -69,6 +69,14 @@ def main() -> None:
         "--speakers", nargs="+", default=[], metavar="名前",
         help="既知の出演者名（スペース区切り、例: --speakers 草野美希 宮武徹郎）"
     )
+    parser.add_argument(
+        "--diarize", action="store_true",
+        help="pyannote.audio で話者分離を実行する（HF_TOKEN 環境変数または --hf-token が必要）"
+    )
+    parser.add_argument(
+        "--hf-token", default=None,
+        help="HuggingFace トークン（--diarize 使用時。省略時は HF_TOKEN 環境変数を参照）"
+    )
     args = parser.parse_args()
 
     config.source_id = args.source_id
@@ -79,6 +87,8 @@ def main() -> None:
     config.factcheck_model = args.factcheck_model
     config.write_graph = not args.no_graph
     config.speakers = args.speakers
+    config.diarize = args.diarize
+    config.hf_token = args.hf_token
 
     mp3_path = Path(args.mp3_path).expanduser()
     if not mp3_path.exists():

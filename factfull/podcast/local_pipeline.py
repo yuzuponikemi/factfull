@@ -42,6 +42,10 @@ class LocalPipelineConfig:
     whisper_device: str = "cpu"
     whisper_compute: str = "int8"
 
+    # 話者分離設定
+    diarize: bool = False
+    hf_token: str | None = None   # 省略時は HF_TOKEN 環境変数を参照
+
     # 要約・ファクトチェックモデル
     analyze_model: str = "gemma4:26b"
     factcheck_model: str = "gemma4:e4b"
@@ -117,6 +121,9 @@ def run_local_pipeline(
             model_size=config.whisper_model,
             device=config.whisper_device,
             compute_type=config.whisper_compute,
+            diarize=config.diarize,
+            hf_token=config.hf_token,
+            speakers=config.speakers or None,
         )
         transcript_text = tr.text
         # transcript_ja.txt として保存済み（transcriber が保存）
