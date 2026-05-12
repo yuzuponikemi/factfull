@@ -35,6 +35,7 @@ class LocalPipelineConfig:
     source_id: str              # "off_topic_ep347" — KG / ファイル名に使用
     channel: str = ""           # チャンネル名
     language: str = "ja"        # 音声言語
+    speakers: list[str] = field(default_factory=list)  # 既知の出演者名（例: ["草野美希", "宮武徹郎"]）
 
     # Whisper 設定
     whisper_model: str = "large-v3"
@@ -224,9 +225,20 @@ def _build_archiver(config: LocalPipelineConfig, meta: dict, out_dir: Path, tran
     arch.model = config.analyze_model
     arch.out_dir = out_dir
     arch.metadata = meta
+    # 既知の出演者名を transcript の先頭に注入して LLM の人名認識を補助する
+    if config.speakers:
+        speakers_note = (
+            "【出演者情報】この音声の出演者: "
+            + "、".join(config.speakers)
+            + "。以下の文字起こしで人名を特定する際はこの情報を最優先で使用すること。\n\n"
+        )
+        enriched_transcript = speakers_note + transcript_text
+    else:
+        enriched_transcript = transcript_text
+
     arch.transcript_raw = []
-    arch.transcript_en = transcript_text
-    arch.transcript_ja = transcript_text   # 日本語音声なのでそのまま使用
+    arch.transcript_en = enriched_transcript
+    arch.transcript_ja = enriched_transcript
     arch.summary_ja = ""
     arch.comments_raw = []
     arch.comments_summary_ja = ""

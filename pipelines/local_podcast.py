@@ -60,11 +60,15 @@ def main() -> None:
     parser.add_argument("--whisper-model", default="large-v3",
                         choices=["tiny", "base", "small", "medium", "large-v3", "large-v3-turbo"],
                         help="Whisper モデルサイズ")
-    parser.add_argument("--regen", action="store_true", help="既存 transcript を再利用")
+    parser.add_argument("--regen", action="store_true", help="既存 transcript・summary を再利用")
     parser.add_argument("--publish", action="store_true", help="homupe ブログに記事を投稿")
     parser.add_argument("--no-graph", action="store_true", help="Neo4j KG 書き込みをスキップ")
     parser.add_argument("--model", default="gemma4:26b", help="要約・分析モデル（デフォルト: gemma4:26b）")
     parser.add_argument("--factcheck-model", default="gemma4:e4b", help="ファクトチェックモデル")
+    parser.add_argument(
+        "--speakers", nargs="+", default=[], metavar="名前",
+        help="既知の出演者名（スペース区切り、例: --speakers 草野美希 宮武徹郎）"
+    )
     args = parser.parse_args()
 
     config.source_id = args.source_id
@@ -74,6 +78,7 @@ def main() -> None:
     config.analyze_model = args.model
     config.factcheck_model = args.factcheck_model
     config.write_graph = not args.no_graph
+    config.speakers = args.speakers
 
     mp3_path = Path(args.mp3_path).expanduser()
     if not mp3_path.exists():
