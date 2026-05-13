@@ -61,6 +61,12 @@ def main() -> None:
         "--min-confidence", type=float, default=0.0,
         help="この confidence 未満の場合は非ゼロ終了（デフォルト: 0.0 = 常に成功）",
     )
+    parser.add_argument(
+        "--translate-to",
+        metavar="LANG",
+        default=None,
+        help="章タイトルを翻訳する言語コード（例: ja, en, fr）",
+    )
     args = parser.parse_args()
 
     from factfull.book.chapter_resolver import ChapterResolver
@@ -69,6 +75,7 @@ def main() -> None:
     result = resolver.resolve(
         args.book_title, args.author,
         extra_urls=args.extra_urls or None,
+        translate_to=args.translate_to,
     )
 
     # ── 出力 ──────────────────────────────────────────────────────────────────

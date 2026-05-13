@@ -127,14 +127,17 @@ class ChapterResolver:
         book_title: str,
         author: str,
         extra_urls: list[str] | None = None,
+        translate_to: str | None = None,
     ) -> ChapterStructure:
         """
         複数ソースから章立てを取得し、合意形成して返す。
 
         Args:
-            book_title: 書籍タイトル（原題・翻訳どちらでも可）
-            author:     著者名
-            extra_urls: 追加で参照する URL リスト（例: 出版社サイト）
+            book_title:   書籍タイトル（原題・翻訳どちらでも可）
+            author:       著者名
+            extra_urls:   追加で参照する URL リスト（例: 出版社サイト）
+            translate_to: 翻訳先言語コード（例: "ja", "en", "fr"）。
+                          None の場合は翻訳しない。
 
         Returns:
             ChapterStructure。confidence ≥ 0.6 かつ sources_agreed ≥ 2 なら信頼できる。
@@ -196,6 +199,9 @@ class ChapterResolver:
 
         chapters, confidence, agreed = self._consensus(extractions)
         print(f"  [chapters] 合意: {len(chapters)} 章  confidence={confidence:.2f}  agreed={agreed}")
+
+        if translate_to and chapters:
+            chapters = self._translate_chapters(chapters, translate_to)
 
         return ChapterStructure(
             book_title=book_title, author=author,
@@ -505,6 +511,82 @@ class ChapterResolver:
             return ""
 
     # ── LLM 抽出 ──────────────────────────────────────────────────────────────
+
+    def _translate_chapters(
+        self, chapters: list[ChapterEntry], target_lang: str
+    ) -> list[ChapterEntry]:
+        """Ollama で章タイトルを target_lang に翻訳して返す。
+
+        番号（num）は保持し、title のみ翻訳する。
+        翻訳失敗時は原文のまま返す。
+        """
+        LANG_NAMES = {
+            "ja": "Japanese", "en": "English", "fr": "French",
+            "de": "German", "zh": "Chinese", "ko": "Korean",
+            "es": "Spanish", "it": "Italian", "pt": "Portuguese",
+            "ru": "Russian",
+        }
+        lang_name = LANG_NAMES.get(target_lang, target_lang)
+
+        # 番号 → タイトル の対応表を作る
+        lines = "\n".join(
+            f"{ch.num or i+1}: {ch.title}"
+            for i, ch in enumerate(chapters)
+        )
+        prompt = (
+            f"Translate the following book chapter titles to {lang_name}.\n"
+            f"Rules:\n"
+            f"- Keep each line's prefix (the number before the colon) unchanged.\n"
+            f"- Translate only the title text after the colon.\n"
+            f"- Output each line as: <number>: <translated title>\n"
+            f"- Output only the translated lines, nothing else.\n\n"
+            f"{lines}\n\n"
+            f"Translation:"
+        )
+        try:
+            payload = json.dumps({
+                "model": self.model,
+                "prompt": prompt,
+                "stream": False,
+                "options": {"temperature": 0.0, "num_predict": 800},
+            }).encode()
+            req = urllib.request.Request(
+                self.ollama_url,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                result = json.loads(resp.read())
+
+            raw = result.get("response", "").strip()
+            # num → translated title mapping
+            translations: dict[str, str] = {}
+            for line in raw.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                m = re.match(r"^([^:]+):\s*(.+)$", line)
+                if m:
+                    translations[m.group(1).strip()] = m.group(2).strip()
+
+            if not translations:
+                return chapters
+
+            print(f"  [translate] → {lang_name}: {len(translations)} タイトル翻訳済み")
+            result_chapters = []
+            for i, ch in enumerate(chapters):
+                key = ch.num or str(i + 1)
+                translated = translations.get(key, ch.title)
+                result_chapters.append(ChapterEntry(
+                    title=translated,
+                    num=ch.num,
+                    part=ch.part,
+                ))
+            return result_chapters
+
+        except Exception:
+            return chapters
 
     def _extract_toc_with_llm(
         self, text: str, source_desc: str
