@@ -74,19 +74,11 @@ def _slug_to_url(slug: str) -> str:
 # ── Substack API クライアント ──────────────────────────────────────────────────
 
 class SubstackClient:
-    def __init__(self, publication_url: str, email: str, password: str) -> None:
+    def __init__(self, publication_url: str, session_cookie: str) -> None:
         self.base_url = publication_url.rstrip("/")
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": "Mozilla/5.0"})
-        self._login(email, password)
-
-    def _login(self, email: str, password: str) -> None:
-        resp = self.session.post(
-            f"{self.base_url}/api/v1/email-login",
-            json={"email": email, "password": password, "redirect": "/"},
-            timeout=30,
-        )
-        resp.raise_for_status()
+        self.session.cookies.set("substack.sid", session_cookie, domain=".substack.com")
 
     def create_draft(self, title: str, subtitle: str, body_html: str) -> dict:
         payload = {
@@ -109,9 +101,8 @@ class SubstackClient:
     @classmethod
     def from_env(cls) -> "SubstackClient":
         url = os.environ["SUBSTACK_PUBLICATION_URL"]
-        email = os.environ["SUBSTACK_EMAIL"]
-        password = os.environ["SUBSTACK_PASSWORD"]
-        return cls(publication_url=url, email=email, password=password)
+        cookie = os.environ["SUBSTACK_SESSION_COOKIE"]
+        return cls(publication_url=url, session_cookie=cookie)
 
 
 # ── ドラフト作成ヘルパー ───────────────────────────────────────────────────────
@@ -220,7 +211,7 @@ def post_to_draft(client: SubstackClient, post_path: Path) -> dict:
 
 def substack_enabled() -> bool:
     """必要な環境変数がすべて設定されているか確認する。"""
-    return all(
-        os.environ.get(k)
-        for k in ("SUBSTACK_PUBLICATION_URL", "SUBSTACK_EMAIL", "SUBSTACK_PASSWORD")
+    return bool(
+        os.environ.get("SUBSTACK_PUBLICATION_URL")
+        and os.environ.get("SUBSTACK_SESSION_COOKIE")
     )
