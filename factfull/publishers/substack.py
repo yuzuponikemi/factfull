@@ -59,8 +59,19 @@ def _strip_frontmatter(md: str) -> str:
     md = re.sub(r"^---\n.*?\n---\n", "", md, flags=re.DOTALL)
     # <!-- more --> 除去
     md = md.replace("<!-- more -->", "")
-    # MkDocs の KG ウィジェット除去
+    # 概念グラフセクション全体を除去（見出し＋説明文＋ウィジェット）
+    md = re.sub(r"## 概念グラフ\n.*?(?=\n## |\Z)", "", md, flags=re.DOTALL)
+    # MkDocs の KG ウィジェット除去（念のため残存分も除去）
     md = re.sub(r'<div class="kg-widget"[^>]*></div>', "", md)
+    # iframe → YouTube リンクに変換
+    md = re.sub(
+        r'<iframe[^>]+src="https://www\.youtube\.com/embed/([^"]+)"[^>]*>.*?</iframe>',
+        lambda m: f"[▶ YouTube で見る](https://www.youtube.com/watch?v={m.group(1).split('?')[0]})",
+        md,
+        flags=re.DOTALL,
+    )
+    # その他の iframe は除去
+    md = re.sub(r"<iframe[^>]*>.*?</iframe>", "", md, flags=re.DOTALL)
     return md.strip()
 
 
