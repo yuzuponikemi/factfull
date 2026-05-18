@@ -40,6 +40,55 @@ HOMUPE_ROOT      = Path(os.environ.get("HOMUPE_ROOT",
                    str(Path.home() / "source" / "personal" / "homupe")))
 
 
+# ── 常時ロギング（stdout/stderr を固定ログにも複製） ────────────────────────────
+
+LOG_PATH = Path("/tmp/factfull_logs/nightly.log")
+
+
+class _Tee:
+    """書き込みを複数ストリームへ複製する薄いラッパー。"""
+
+    def __init__(self, primary, *extras) -> None:
+        self._primary = primary
+        self._extras = extras
+
+    def write(self, data: str) -> int:
+        for s in self._extras:
+            s.write(data)
+            s.flush()
+        return self._primary.write(data)
+
+    def flush(self) -> None:
+        self._primary.flush()
+        for s in self._extras:
+            s.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._primary, name)
+
+
+def _setup_tee_logging(log_path: Path = LOG_PATH) -> None:
+    """stdout/stderr を log_path にも常時複製する。
+    すでに同じファイルへリダイレクトされている場合（launchd の StandardOutPath 等）は
+    二重書き込みを避けるためスキップする。"""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # stdout が既に log_path と同じファイル（inode 一致）なら何もしない
+    try:
+        if log_path.exists():
+            stdout_stat = os.fstat(sys.stdout.fileno())
+            log_stat = os.stat(log_path)
+            if (stdout_stat.st_ino, stdout_stat.st_dev) == (log_stat.st_ino, log_stat.st_dev):
+                return
+    except (OSError, AttributeError):
+        pass
+
+    log_file = open(log_path, "a", buffering=1, encoding="utf-8")
+    log_file.write(f"\n===== {datetime.now():%Y-%m-%d %H:%M:%S} session start =====\n")
+    sys.stdout = _Tee(sys.stdout, log_file)
+    sys.stderr = _Tee(sys.stderr, log_file)
+
+
 @dataclass
 class ChannelConfig:
     id: str
@@ -408,6 +457,10 @@ def main() -> None:
     parser.add_argument("--arxiv-only",    action="store_true", help="arXiv フェーズのみ実行（podcast をスキップ）")
     parser.add_argument("--skip-substack", action="store_true", help="Substack ドラフト作成をスキップ")
     args = parser.parse_args()
+
+    # stdout/stderr を /tmp/factfull_logs/nightly.log にも複製
+    # （マニュアル実行・launchd 実行どちらでも tail -f で追跡可能にする）
+    _setup_tee_logging()
 
     # ~/.config/factfull/.env から認証情報を読み込む（存在する場合のみ）
     _secrets = Path.home() / ".config" / "factfull" / ".env"
