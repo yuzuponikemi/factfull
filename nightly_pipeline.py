@@ -401,6 +401,15 @@ def main() -> None:
     parser.add_argument("--skip-substack", action="store_true", help="Substack ドラフト作成をスキップ")
     args = parser.parse_args()
 
+    # ~/.config/factfull/.env から認証情報を読み込む（存在する場合のみ）
+    _secrets = Path.home() / ".config" / "factfull" / ".env"
+    if _secrets.exists():
+        for _line in _secrets.read_text(encoding="utf-8").splitlines():
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _k, _, _v = _line.partition("=")
+                os.environ.setdefault(_k.strip(), _v.strip())
+
     # 環境変数デフォルト
     os.environ.setdefault("NEO4J_URI",      "bolt://localhost:7687")
     os.environ.setdefault("NEO4J_USER",     "neo4j")
