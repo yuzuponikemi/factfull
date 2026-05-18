@@ -318,6 +318,14 @@ def process_pending(
             print("    [DRY-RUN] スキップ")
             continue
 
+        from factfull.ingest.youtube_feed import get_video_duration_seconds
+        dur = get_video_duration_seconds(vid)
+        if dur is not None and dur < 3600:
+            print(f"    [SKIP] 短尺動画 ({dur}s < 3600s)")
+            registry.mark_failed("podcast", vid, error=f"short_video:{dur}s")
+            fail += 1
+            continue
+
         registry.mark_processing("podcast", vid)
         try:
             result = run_pipeline(pipeline_config, url)

@@ -101,6 +101,23 @@ def find_new_entries(
     return new
 
 
+def get_video_duration_seconds(video_id: str) -> int | None:
+    """YouTube 動画ページから再生時間（秒）を取得する。取得失敗時は None を返す。"""
+    import re
+    import urllib.request
+
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            html = r.read().decode("utf-8")
+    except Exception:
+        return None
+
+    m = re.search(r'"lengthSeconds":"(\d+)"', html)
+    return int(m.group(1)) if m else None
+
+
 def _extract_video_id(entry) -> str | None:
     """feedparser エントリから YouTube video_id を抽出する。"""
     # yt:videoId タグが最も確実
