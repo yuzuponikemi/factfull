@@ -4,10 +4,12 @@ factfull/publishers/substack.py
 Substack 非公式 API クライアント。
 生成した記事をドラフトとして Substack に投稿する。
 
-必要な環境変数:
-    SUBSTACK_EMAIL           Substack ログインメール
-    SUBSTACK_PASSWORD        Substack パスワード
-    SUBSTACK_PUBLICATION_URL 例: https://yourpub.substack.com
+必要な環境変数（~/.config/factfull/.env で管理）:
+    SUBSTACK_PUBLICATION_URL  例: https://ikemix.substack.com
+    SUBSTACK_USER_ID          数値のユーザーID
+    SUBSTACK_SID              substack.sid クッキー値
+    SUBSTACK_LLI              substack.lli クッキー値（JWT）
+    SUBSTACK_AWS              AWSALBTG と AWSALBTGCORS の生クッキー文字列
 """
 from __future__ import annotations
 
@@ -74,11 +76,23 @@ def _slug_to_url(slug: str) -> str:
 # ── Substack API クライアント ──────────────────────────────────────────────────
 
 class SubstackClient:
-    def __init__(self, publication_url: str, session_cookie: str) -> None:
+    def __init__(
+        self,
+        publication_url: str,
+        user_id: int,
+        sid: str,
+        lli: str,
+        aws_cookies: str,
+    ) -> None:
         self.base_url = publication_url.rstrip("/")
-        self.session = requests.Session()
-        self.session.headers.update({"User-Agent": "Mozilla/5.0"})
-        self.session.cookies.set("substack.sid", session_cookie, domain=".substack.com")
+        self.user_id = user_id
+        self._cookie_header = f"substack.sid={sid}; substack.lli={lli}; {aws_cookies}"
+        self._headers = {
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+            "Referer": self.base_url + "/",
+            "Origin": self.base_url,
+            "Cookie": self._cookie_header,
+        }
 
     def create_draft(self, title: str, subtitle: str, body_html: str) -> dict:
         payload = {
@@ -89,9 +103,11 @@ class SubstackClient:
             "draft_section_id": None,
             "draft_podcast_url": None,
             "draft_podcast_duration": None,
+            "draft_bylines": [{"id": self.user_id, "is_guest": False}],
         }
-        resp = self.session.post(
+        resp = requests.post(
             f"{self.base_url}/api/v1/drafts",
+            headers=self._headers,
             json=payload,
             timeout=30,
         )
@@ -100,9 +116,13 @@ class SubstackClient:
 
     @classmethod
     def from_env(cls) -> "SubstackClient":
-        url = os.environ["SUBSTACK_PUBLICATION_URL"]
-        cookie = os.environ["SUBSTACK_SESSION_COOKIE"]
-        return cls(publication_url=url, session_cookie=cookie)
+        return cls(
+            publication_url=os.environ["SUBSTACK_PUBLICATION_URL"],
+            user_id=int(os.environ["SUBSTACK_USER_ID"]),
+            sid=os.environ["SUBSTACK_SID"],
+            lli=os.environ["SUBSTACK_LLI"],
+            aws_cookies=os.environ["SUBSTACK_AWS"],
+        )
 
 
 # ── ドラフト作成ヘルパー ───────────────────────────────────────────────────────
@@ -211,7 +231,7 @@ def post_to_draft(client: SubstackClient, post_path: Path) -> dict:
 
 def substack_enabled() -> bool:
     """必要な環境変数がすべて設定されているか確認する。"""
-    return bool(
-        os.environ.get("SUBSTACK_PUBLICATION_URL")
-        and os.environ.get("SUBSTACK_SESSION_COOKIE")
+    return all(
+        os.environ.get(k)
+        for k in ("SUBSTACK_PUBLICATION_URL", "SUBSTACK_USER_ID", "SUBSTACK_SID", "SUBSTACK_LLI", "SUBSTACK_AWS")
     )
