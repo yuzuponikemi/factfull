@@ -129,6 +129,19 @@ def _md_to_prosemirror(text: str) -> str:
 
 # ── 前処理 ────────────────────────────────────────────────────────────────────
 
+def _extract_youtube_url(md: str) -> str | None:
+    """動画セクションから YouTube URL を抽出する。"""
+    # [外部で開く](URL) 形式
+    m = re.search(r"\[外部で開く\]\((https://www\.youtube\.com/watch\?v=[^)]+)\)", md)
+    if m:
+        return m.group(1)
+    # iframe embed URL から変換
+    m = re.search(r'src="https://www\.youtube\.com/embed/([^"?]+)', md)
+    if m:
+        return f"https://www.youtube.com/watch?v={m.group(1)}"
+    return None
+
+
 def _strip_frontmatter(md: str) -> str:
     """YAML フロントマターと Substack 向けに不要な要素を除去する。"""
     md = re.sub(r"^---\n.*?\n---\n", "", md, flags=re.DOTALL)
@@ -138,7 +151,6 @@ def _strip_frontmatter(md: str) -> str:
     md = re.sub(r'<div class="kg-widget"[^>]*></div>', "", md)
     md = re.sub(r"_生成条件:.*?_\n?", "", md)
     md = re.sub(r"<iframe[^>]*>.*?</iframe>", "", md, flags=re.DOTALL)
-    # 残存 HTML タグを除去
     md = re.sub(r"<[^>]+>", "", md)
     return md.strip()
 
@@ -208,6 +220,10 @@ class SubstackClient:
 def post_to_draft(client: SubstackClient, post_path: Path) -> dict:
     """homupe の .md ファイルを読んで Substack ドラフトを作成する。"""
     raw = post_path.read_text(encoding="utf-8")
+
+    # 動画セクションが消える前に YouTube URL を抽出
+    youtube_url = _extract_youtube_url(raw)
+
     body_md = _strip_frontmatter(raw)
 
     # H1 → タイトル（本文から除去）
@@ -227,6 +243,10 @@ def post_to_draft(client: SubstackClient, post_path: Path) -> dict:
             paras = paras[i + 1:]
             break
     body_md = "\n\n".join(paras).strip()
+
+    # 冒頭に YouTube リンクを挿入
+    if youtube_url:
+        body_md = f"[▶ YouTube で見る]({youtube_url})\n\n{body_md}"
 
     # 末尾に homupe リンクを追加
     homupe_url = _slug_to_url(post_path.stem)
