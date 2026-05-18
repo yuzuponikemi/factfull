@@ -4,6 +4,8 @@ factfull/publishers/substack.py
 Substack 非公式 API クライアント。
 生成した記事をドラフトとして Substack に投稿する。
 
+Substack の draft_body は ProseMirror JSON 形式（HTML 不可）。
+
 必要な環境変数（~/.config/factfull/.env で管理）:
     SUBSTACK_PUBLICATION_URL  例: https://ikemix.substack.com
     SUBSTACK_USER_ID          数値のユーザーID
@@ -13,9 +15,9 @@ Substack 非公式 API クライアント。
 """
 from __future__ import annotations
 
+import json
 import os
 import re
-import html as html_lib
 from pathlib import Path
 
 import requests
@@ -24,55 +26,124 @@ import requests
 BLOG_BASE_URL = "https://soryu.news"
 
 
-# ── Markdown → HTML ────────────────────────────────────────────────────────────
+# ── Markdown → ProseMirror JSON ────────────────────────────────────────────────
 
-def _md_to_html(text: str) -> str:
-    """Markdown を HTML に変換する。markdown パッケージがあれば使用、なければ簡易変換。"""
-    try:
-        import markdown
-        return markdown.markdown(text, extensions=["extra", "nl2br"])
-    except ImportError:
-        # フォールバック: 段落・見出し・太字のみ
-        lines = text.strip().split("\n")
-        out = []
-        for line in lines:
-            line = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", line)
-            line = re.sub(r"\*(.+?)\*", r"<em>\1</em>", line)
-            if line.startswith("## "):
-                out.append(f"<h2>{line[3:]}</h2>")
-            elif line.startswith("### "):
-                out.append(f"<h3>{line[4:]}</h3>")
-            elif line.startswith("# "):
-                out.append(f"<h1>{line[2:]}</h1>")
-            elif line.startswith("- "):
-                out.append(f"<li>{line[2:]}</li>")
-            elif line.strip() == "":
-                out.append("")
-            else:
-                out.append(f"<p>{line}</p>")
-        return "\n".join(out)
+def _inline_nodes(text: str) -> list:
+    """インライン Markdown（太字・斜体・コード・リンク・改行）をノードリストに変換する。"""
+    # 行内改行を hard_break に変換するため行単位で処理
+    result: list = []
+    lines = text.split("\n")
+    for li, line in enumerate(lines):
+        if li > 0:
+            result.append({"type": "hard_break"})
+        if not line:
+            continue
+        pattern = re.compile(
+            r"\*\*(.+?)\*\*"          # bold
+            r"|\*(.+?)\*"             # italic
+            r"|`(.+?)`"               # code
+            r"|\[([^\]]+)\]\(([^)]+)\)"  # link
+        )
+        pos = 0
+        for m in pattern.finditer(line):
+            if m.start() > pos:
+                result.append({"type": "text", "text": line[pos:m.start()]})
+            if m.group(1):
+                result.append({"type": "text", "text": m.group(1), "marks": [{"type": "bold"}]})
+            elif m.group(2):
+                result.append({"type": "text", "text": m.group(2), "marks": [{"type": "italic"}]})
+            elif m.group(3):
+                result.append({"type": "text", "text": m.group(3), "marks": [{"type": "code"}]})
+            elif m.group(4):
+                result.append({
+                    "type": "text",
+                    "text": m.group(4),
+                    "marks": [{"type": "link", "attrs": {"href": m.group(5), "target": "_blank"}}],
+                })
+            pos = m.end()
+        if pos < len(line):
+            result.append({"type": "text", "text": line[pos:]})
+    return result or [{"type": "text", "text": ""}]
 
+
+def _md_to_prosemirror(text: str) -> str:
+    """Markdown テキストを Substack の ProseMirror JSON 文字列に変換する。"""
+    nodes: list = []
+    blocks = re.split(r"\n\n+", text.strip())
+
+    for block in blocks:
+        block = block.strip()
+        if not block:
+            continue
+
+        # 見出し（## / ### / ####）
+        h = re.match(r"^(#{1,4})\s+(.+)$", block)
+        if h:
+            nodes.append({
+                "type": "heading",
+                "attrs": {"level": len(h.group(1))},
+                "content": _inline_nodes(h.group(2).strip()),
+            })
+            continue
+
+        # 水平線
+        if re.match(r"^-{3,}$", block):
+            nodes.append({"type": "horizontal_rule"})
+            continue
+
+        # 箇条書き（- item または * item）
+        if re.match(r"^[-*] ", block):
+            items = []
+            for line in block.split("\n"):
+                m = re.match(r"^[-*] (.+)$", line)
+                if m:
+                    items.append({
+                        "type": "list_item",
+                        "content": [{"type": "paragraph", "content": _inline_nodes(m.group(1))}],
+                    })
+            if items:
+                nodes.append({"type": "bullet_list", "content": items})
+            continue
+
+        # 引用ブロック（> で始まる行）
+        if block.startswith(">"):
+            # 複数段落の引用をサポート（空の > 行で区切る）
+            raw_lines = block.split("\n")
+            stripped = [re.sub(r"^>[ ]?", "", l) for l in raw_lines]
+            inner_text = "\n".join(stripped)
+            inner_blocks = re.split(r"\n\n+", inner_text.strip())
+            bq_content = []
+            for ib in inner_blocks:
+                ib = ib.strip()
+                if ib:
+                    bq_content.append({"type": "paragraph", "content": _inline_nodes(ib)})
+            if bq_content:
+                nodes.append({"type": "blockquote", "content": bq_content})
+            continue
+
+        # 通常段落
+        nodes.append({"type": "paragraph", "content": _inline_nodes(block)})
+
+    return json.dumps({"type": "doc", "content": nodes}, ensure_ascii=False)
+
+
+# ── 前処理 ────────────────────────────────────────────────────────────────────
 
 def _strip_frontmatter(md: str) -> str:
     """YAML フロントマターと Substack 向けに不要な要素を除去する。"""
-    # YAML フロントマター
     md = re.sub(r"^---\n.*?\n---\n", "", md, flags=re.DOTALL)
-    # <!-- more -->
     md = md.replace("<!-- more -->", "")
-    # Substack で表示できない・不要なセクションをまるごと除去
     for section in ("概念グラフ", "動画", "キーワード"):
         md = re.sub(rf"## {section}\n.*?(?=\n## |\Z)", "", md, flags=re.DOTALL)
-    # KG ウィジェット（念のため残存分も除去）
     md = re.sub(r'<div class="kg-widget"[^>]*></div>', "", md)
-    # 生成条件行（技術メタ情報）
     md = re.sub(r"_生成条件:.*?_\n?", "", md)
-    # iframe を除去（動画セクションごと消えるが念のため）
     md = re.sub(r"<iframe[^>]*>.*?</iframe>", "", md, flags=re.DOTALL)
+    # 残存 HTML タグを除去
+    md = re.sub(r"<[^>]+>", "", md)
     return md.strip()
 
 
 def _slug_to_url(slug: str) -> str:
-    """'2026-05-18-some-title' → 'https://soryu.news/blog/2026/05/2026-05-18-some-title/'"""
     m = re.match(r"(\d{4})-(\d{2})-\d{2}-.+", slug)
     if not m:
         return BLOG_BASE_URL
@@ -93,19 +164,19 @@ class SubstackClient:
     ) -> None:
         self.base_url = publication_url.rstrip("/")
         self.user_id = user_id
-        self._cookie_header = f"substack.sid={sid}; substack.lli={lli}; {aws_cookies}"
+        cookie = f"substack.sid={sid}; substack.lli={lli}; {aws_cookies}"
         self._headers = {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
             "Referer": self.base_url + "/",
             "Origin": self.base_url,
-            "Cookie": self._cookie_header,
+            "Cookie": cookie,
         }
 
-    def create_draft(self, title: str, subtitle: str, body_html: str) -> dict:
+    def create_draft(self, title: str, subtitle: str, body_json: str) -> dict:
         payload = {
             "draft_title": title,
             "draft_subtitle": subtitle,
-            "draft_body": body_html,
+            "draft_body": body_json,
             "audience": "everyone",
             "draft_section_id": None,
             "draft_podcast_url": None,
@@ -132,115 +203,40 @@ class SubstackClient:
         )
 
 
-# ── ドラフト作成ヘルパー ───────────────────────────────────────────────────────
-
-def create_podcast_draft(
-    client: SubstackClient,
-    title_ja: str,
-    excerpt: str,
-    post_path: Path,
-) -> dict:
-    """Podcast ブログ記事ファイルから Substack ドラフトを作成する。
-
-    Args:
-        client: SubstackClient インスタンス
-        title_ja: 日本語タイトル
-        excerpt: 抜粋（サブタイトルとして使用）
-        post_path: homupe に書き出した .md ファイルのパス
-
-    Returns:
-        Substack API のレスポンス dict
-    """
-    raw_md = post_path.read_text(encoding="utf-8")
-    body_md = _strip_frontmatter(raw_md)
-
-    slug = post_path.stem
-    homupe_url = _slug_to_url(slug)
-    body_md += f"\n\n---\n\n[層流で読む →]({homupe_url})"
-
-    body_html = _md_to_html(body_md)
-    return client.create_draft(
-        title=title_ja,
-        subtitle=excerpt,
-        body_html=body_html,
-    )
-
-
-def create_arxiv_draft(
-    client: SubstackClient,
-    post_path: Path,
-    date_str: str,
-) -> dict:
-    """arXiv ダイジェスト記事ファイルから Substack ドラフトを作成する。
-
-    Args:
-        client: SubstackClient インスタンス
-        post_path: homupe に書き出した .md ファイルのパス
-        date_str: "2026-05-18" 形式の日付
-
-    Returns:
-        Substack API のレスポンス dict
-    """
-    raw_md = post_path.read_text(encoding="utf-8")
-    body_md = _strip_frontmatter(raw_md)
-
-    slug = post_path.stem
-    homupe_url = _slug_to_url(slug)
-    body_md += f"\n\n---\n\n[層流で読む →]({homupe_url})"
-
-    body_html = _md_to_html(body_md)
-    return client.create_draft(
-        title=f"arXiv AI 論文ダイジェスト {date_str}",
-        subtitle="cs.AI / cs.LG / cs.CL の注目論文まとめ",
-        body_html=body_html,
-    )
-
+# ── ドラフト作成 ──────────────────────────────────────────────────────────────
 
 def post_to_draft(client: SubstackClient, post_path: Path) -> dict:
-    """homupe の .md ファイルを読んで Substack ドラフトを作成する。
-
-    フロントマター・<!-- more -->・KG ウィジェットを除去し、
-    H1 見出しをタイトル、直後の段落をサブタイトルとして使用する。
-
-    Args:
-        client: SubstackClient インスタンス
-        post_path: homupe/docs/blog/posts/... の .md ファイルパス
-
-    Returns:
-        Substack API のレスポンス dict
-    """
+    """homupe の .md ファイルを読んで Substack ドラフトを作成する。"""
     raw = post_path.read_text(encoding="utf-8")
     body_md = _strip_frontmatter(raw)
 
-    # H1 をタイトルとして抽出・除去
-    title = post_path.stem  # フォールバック
+    # H1 → タイトル（本文から除去）
+    title = post_path.stem
     m = re.search(r"^# (.+)$", body_md, re.MULTILINE)
     if m:
         title = m.group(1).strip()
         body_md = body_md[m.end():].strip()
 
-    # 最初の非空段落をサブタイトルとして抽出し、本文からも除去（重複防止）
+    # 最初の非空段落 → サブタイトル（本文からも除去して重複防止）
     subtitle = ""
     paras = re.split(r"\n\n+", body_md)
     for i, para in enumerate(paras):
         para = para.strip()
-        if para and not para.startswith("#") and not para.startswith("<"):
+        if para and not para.startswith("#"):
             subtitle = para
-            paras = paras[i + 1:]  # サブタイトル段落を本文から除く
+            paras = paras[i + 1:]
             break
     body_md = "\n\n".join(paras).strip()
 
-    # homupe リンクを末尾に追加
-    slug = post_path.stem
-    homupe_url = _slug_to_url(slug)
+    # 末尾に homupe リンクを追加
+    homupe_url = _slug_to_url(post_path.stem)
     body_md += f"\n\n---\n\n[層流で読む →]({homupe_url})"
 
-    body_html = _md_to_html(body_md)
-    return client.create_draft(title=title, subtitle=subtitle, body_html=body_html)
+    body_json = _md_to_prosemirror(body_md)
+    return client.create_draft(title=title, subtitle=subtitle, body_json=body_json)
 
 
 def substack_enabled() -> bool:
-    """必要な環境変数がすべて設定されているか確認する。"""
     return all(
         os.environ.get(k)
         for k in ("SUBSTACK_PUBLICATION_URL", "SUBSTACK_USER_ID", "SUBSTACK_SID", "SUBSTACK_LLI", "SUBSTACK_AWS")
