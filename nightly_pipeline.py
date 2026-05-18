@@ -337,6 +337,7 @@ def process_pending(
     blog_dir: Path,
     max_episodes: int = 6,
     dry_run: bool = False,
+    regen: bool = False,
 ) -> tuple[int, int]:
     """
     Registry の pending エピソードを処理する。
@@ -377,7 +378,7 @@ def process_pending(
 
         registry.mark_processing("podcast", vid)
         try:
-            result = run_pipeline(pipeline_config, url)
+            result = run_pipeline(pipeline_config, url, regen=regen)
             print(f"    score={result.score:.0f}  KG=✓")
 
             meta = generate_blog_metadata(result, model=META_MODEL)
@@ -456,6 +457,7 @@ def main() -> None:
     parser.add_argument("--skip-arxiv",    action="store_true", help="arXiv フェーズをスキップ")
     parser.add_argument("--arxiv-only",    action="store_true", help="arXiv フェーズのみ実行（podcast をスキップ）")
     parser.add_argument("--skip-substack", action="store_true", help="Substack ドラフト作成をスキップ")
+    parser.add_argument("--regen",         action="store_true", help="既存の podcast 出力ディレクトリを再利用（再翻訳・再要約をスキップ）")
     args = parser.parse_args()
 
     # stdout/stderr を /tmp/factfull_logs/nightly.log にも複製
@@ -520,7 +522,7 @@ def main() -> None:
             # ── Phase 2: pending 処理 ──
             pending_count = len(reg.pending("podcast"))
             print(f"\n[Phase 2] pending 処理（{pending_count} 件 / 上限 {args.max}）")
-            ok, fail = process_pending(reg, blog_dir, max_episodes=args.max, dry_run=args.dry_run)
+            ok, fail = process_pending(reg, blog_dir, max_episodes=args.max, dry_run=args.dry_run, regen=args.regen)
             print(f"\n[Phase 2] 完了: 成功 {ok}, 失敗 {fail}")
 
         stats = reg.stats()
