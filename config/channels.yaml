@@ -22,7 +22,7 @@ channels:
   - id: ycombinator
     name: "Y Combinator"
     channel_id: "UCcefcZRL2oaA_uBNeo5UOWg"
-    enabled: true
+    enabled: false
     max_per_run: 1
     lookback_days: 14
 
