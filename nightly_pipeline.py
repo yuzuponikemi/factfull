@@ -391,13 +391,14 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    parser.add_argument("--dry-run",    action="store_true", help="検出のみ（処理・投稿しない）")
-    parser.add_argument("--push",       action="store_true", help="処理後 homupe を git push")
-    parser.add_argument("--max",        type=int, default=6,  help="1回の実行で処理する上限（default: 6）")
-    parser.add_argument("--channel",    default=None, help="チャンネル ID で絞り込み（例: lex_fridman）")
-    parser.add_argument("--skip-scan",  action="store_true", help="RSS スキャンをスキップして pending のみ処理")
-    parser.add_argument("--skip-arxiv", action="store_true", help="arXiv フェーズをスキップ")
-    parser.add_argument("--arxiv-only", action="store_true", help="arXiv フェーズのみ実行（podcast をスキップ）")
+    parser.add_argument("--dry-run",       action="store_true", help="検出のみ（処理・投稿しない）")
+    parser.add_argument("--push",          action="store_true", help="処理後 homupe を git push")
+    parser.add_argument("--max",           type=int, default=6,  help="1回の実行で処理する上限（default: 6）")
+    parser.add_argument("--channel",       default=None, help="チャンネル ID で絞り込み（例: lex_fridman）")
+    parser.add_argument("--skip-scan",     action="store_true", help="RSS スキャンをスキップして pending のみ処理")
+    parser.add_argument("--skip-arxiv",    action="store_true", help="arXiv フェーズをスキップ")
+    parser.add_argument("--arxiv-only",    action="store_true", help="arXiv フェーズのみ実行（podcast をスキップ）")
+    parser.add_argument("--skip-substack", action="store_true", help="Substack ドラフト作成をスキップ")
     args = parser.parse_args()
 
     # 環境変数デフォルト
@@ -418,6 +419,9 @@ def main() -> None:
     arxiv_cfg   = load_arxiv_config()
     blog_dir    = default_blog_dir(HOMUPE_ROOT)
     blog_dir.mkdir(parents=True, exist_ok=True)
+
+    # 処理前のファイル一覧をスナップショット（新規作成検出用）
+    existing_posts: set[Path] = set(blog_dir.glob("*.md"))
 
     arxiv_created = False
     ok = fail = 0
@@ -452,13 +456,38 @@ def main() -> None:
         stats = reg.stats()
         print(f"  Registry 状況: {stats['by_status']}")
 
-    # ── Phase 3: git push ──
+    # ── Phase 3: Substack ドラフト ──
     any_new = ok > 0 or arxiv_created
+    new_posts = sorted(set(blog_dir.glob("*.md")) - existing_posts)
+
+    if args.skip_substack or args.dry_run:
+        print("\n[Phase 3] Substack スキップ")
+    elif not new_posts:
+        print("\n[Phase 3] 新規記事なし — Substack スキップ")
+    else:
+        from factfull.publishers.substack import SubstackClient, post_to_draft, substack_enabled
+        print(f"\n[Phase 3] Substack ドラフト作成（{len(new_posts)} 件）")
+        if not substack_enabled():
+            print("  ⚠ SUBSTACK_* 環境変数が未設定 — スキップ")
+        else:
+            try:
+                client = SubstackClient.from_env()
+                for post_path in new_posts:
+                    try:
+                        draft = post_to_draft(client, post_path)
+                        draft_id = draft.get("id", "?")
+                        print(f"  ✅ ドラフト作成: {post_path.name}  (id={draft_id})")
+                    except Exception as e:
+                        print(f"  ❌ 失敗: {post_path.name}  {e}", file=sys.stderr)
+            except Exception as e:
+                print(f"  ❌ Substack ログイン失敗: {e}", file=sys.stderr)
+
+    # ── Phase 4: git push ──
     if args.push and any_new:
-        print("\n[Phase 3] homupe git push")
+        print("\n[Phase 4] homupe git push")
         git_push_homupe(HOMUPE_ROOT, dry_run=args.dry_run)
     elif args.push and not any_new:
-        print("\n[Phase 3] 新規投稿なし — push スキップ")
+        print("\n[Phase 4] 新規投稿なし — push スキップ")
 
     elapsed = (datetime.now() - started_at).total_seconds()
     print(f"\n[nightly] 完了: {elapsed:.0f}秒")
