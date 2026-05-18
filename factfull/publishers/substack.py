@@ -54,23 +54,19 @@ def _md_to_html(text: str) -> str:
 
 
 def _strip_frontmatter(md: str) -> str:
-    """YAML フロントマターと MkDocs 固有の要素を除去する。"""
-    # YAML フロントマター除去
+    """YAML フロントマターと Substack 向けに不要な要素を除去する。"""
+    # YAML フロントマター
     md = re.sub(r"^---\n.*?\n---\n", "", md, flags=re.DOTALL)
-    # <!-- more --> 除去
+    # <!-- more -->
     md = md.replace("<!-- more -->", "")
-    # 概念グラフセクション全体を除去（見出し＋説明文＋ウィジェット）
-    md = re.sub(r"## 概念グラフ\n.*?(?=\n## |\Z)", "", md, flags=re.DOTALL)
-    # MkDocs の KG ウィジェット除去（念のため残存分も除去）
+    # Substack で表示できない・不要なセクションをまるごと除去
+    for section in ("概念グラフ", "動画", "キーワード"):
+        md = re.sub(rf"## {section}\n.*?(?=\n## |\Z)", "", md, flags=re.DOTALL)
+    # KG ウィジェット（念のため残存分も除去）
     md = re.sub(r'<div class="kg-widget"[^>]*></div>', "", md)
-    # iframe → YouTube リンクに変換
-    md = re.sub(
-        r'<iframe[^>]+src="https://www\.youtube\.com/embed/([^"]+)"[^>]*>.*?</iframe>',
-        lambda m: f"[▶ YouTube で見る](https://www.youtube.com/watch?v={m.group(1).split('?')[0]})",
-        md,
-        flags=re.DOTALL,
-    )
-    # その他の iframe は除去
+    # 生成条件行（技術メタ情報）
+    md = re.sub(r"_生成条件:.*?_\n?", "", md)
+    # iframe を除去（動画セクションごと消えるが念のため）
     md = re.sub(r"<iframe[^>]*>.*?</iframe>", "", md, flags=re.DOTALL)
     return md.strip()
 
@@ -223,13 +219,16 @@ def post_to_draft(client: SubstackClient, post_path: Path) -> dict:
         title = m.group(1).strip()
         body_md = body_md[m.end():].strip()
 
-    # 最初の非空段落をサブタイトルとして抽出
+    # 最初の非空段落をサブタイトルとして抽出し、本文からも除去（重複防止）
     subtitle = ""
-    for para in re.split(r"\n\n+", body_md):
+    paras = re.split(r"\n\n+", body_md)
+    for i, para in enumerate(paras):
         para = para.strip()
         if para and not para.startswith("#") and not para.startswith("<"):
             subtitle = para
+            paras = paras[i + 1:]  # サブタイトル段落を本文から除く
             break
+    body_md = "\n\n".join(paras).strip()
 
     # homupe リンクを末尾に追加
     slug = post_path.stem
