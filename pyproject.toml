@@ -31,6 +31,13 @@ diarize = [
     "yt-dlp>=2024.1.0",
     "torch>=2.0",
 ]
+# Workspace integration: research/agent layer.
+# factfull is the Knowledge Layer and depends on test-smith (Agent Layer)
+# for multi-step research/verification flows (ReAct loops, etc.). The
+# import-direction rule is one-way: factfull → test-smith only.
+research = [
+    "test-smith",
+]
 
 [build-system]
 requires = ["setuptools>=61"]
@@ -39,6 +46,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["factfull*"]
+
+[tool.uv.sources]
+test-smith = { path = "../test-smith", editable = true }
 
 [dependency-groups]
 dev = [
