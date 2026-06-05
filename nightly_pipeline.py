@@ -154,6 +154,52 @@ def _make_pipeline_config():
 
 META_MODEL = "gemma4:e4b"
 
+NEO4J_CONTAINER = "kg-builder-neo4j"
+NEO4J_COMPOSE_DIR = Path.home() / "source" / "personal" / "kg-builder" / "docker"
+
+
+def _get_neo4j_client():
+    """Neo4j コンテナを起動して接続を返す。失敗時は None を返す（パイプラインは継続）。"""
+    import time
+    from factfull.graph.neo4j import Neo4jClient
+
+    # まず直接接続を試みる
+    try:
+        return Neo4jClient()
+    except Exception:
+        pass
+
+    # コンテナを起動して再試行
+    print("  [Neo4j] 未接続 → コンテナ起動を試みます...")
+    try:
+        result = subprocess.run(
+            ["docker", "start", NEO4J_CONTAINER],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode != 0:
+            # コンテナが存在しない場合は docker compose で起動
+            subprocess.run(
+                ["docker", "compose", "up", "-d", "neo4j"],
+                capture_output=True, text=True, timeout=60,
+                cwd=str(NEO4J_COMPOSE_DIR),
+            )
+    except Exception as e:
+        print(f"  [Neo4j] コンテナ起動失敗: {e} → KG 書き込みをスキップ", file=sys.stderr)
+        return None
+
+    # 起動後、最大 30 秒待機
+    for i in range(6):
+        time.sleep(5)
+        try:
+            client = Neo4jClient()
+            print(f"  [Neo4j] 接続成功（{(i+1)*5}秒後）")
+            return client
+        except Exception:
+            print(f"  [Neo4j] 待機中... ({(i+1)*5}s)")
+
+    print("  [Neo4j] 30秒待っても接続できず → KG 書き込みをスキップ", file=sys.stderr)
+    return None
+
 
 # ── Phase 0: arXiv 日次ダイジェスト ──────────────────────────────────────────
 
@@ -216,33 +262,35 @@ def process_arxiv_papers(
     model = arxiv_cfg.summarize_model
     processed: list = []
 
-    with Neo4jClient() as client:
-        for paper in papers:
-            print(f"\n  📄 [{paper.paper_id}] {paper.title[:55]}...")
-            registry.add("arxiv", paper.paper_id, title=paper.title)
-            registry.mark_processing("arxiv", paper.paper_id)
+    neo4j_client = _get_neo4j_client()
 
-            try:
-                # Conclusion 取得
-                print(f"    → conclusion 取得中...")
-                paper.conclusion = fetch_conclusion(paper.paper_id)
-                if paper.conclusion:
-                    print(f"    → {len(paper.conclusion)} 文字")
-                else:
-                    print(f"    → (取得できず、abstract のみ使用)")
+    for paper in papers:
+        print(f"\n  📄 [{paper.paper_id}] {paper.title[:55]}...")
+        registry.add("arxiv", paper.paper_id, title=paper.title)
+        registry.mark_processing("arxiv", paper.paper_id)
 
-                # テキスト = abstract + conclusion
-                source_text = f"{paper.abstract}\n\n{paper.conclusion}".strip()
-                source_id = f"arxiv_{paper.paper_id}"
+        try:
+            # Conclusion 取得
+            print(f"    → conclusion 取得中...")
+            paper.conclusion = fetch_conclusion(paper.paper_id)
+            if paper.conclusion:
+                print(f"    → {len(paper.conclusion)} 文字")
+            else:
+                print(f"    → (取得できず、abstract のみ使用)")
 
-                # エンティティ・関係抽出
+            # テキスト = abstract + conclusion
+            source_text = f"{paper.abstract}\n\n{paper.conclusion}".strip()
+            source_id = f"arxiv_{paper.paper_id}"
+
+            graph_written = False
+            if neo4j_client is not None:
+                # エンティティ・関係抽出 → Neo4j 書き込み
                 chunks = [source_text]
                 entities = extract_entities(chunks, source_id=source_id, model=model)
                 print(f"    → entities: {len(entities)}")
                 relations = extract_relations(chunks, entities, source_id=source_id, model=model)
                 print(f"    → relations: {len(relations)}")
 
-                # Neo4j 書き込み
                 source = SourceDoc(
                     source_type="arxiv",
                     source_id=source_id,
@@ -257,15 +305,21 @@ def process_arxiv_papers(
                     },
                 )
                 pdoc = ProcessedDoc(source=source, entities=entities, triples=relations)
-                client.write_processed_doc(pdoc, clear_old=True)
+                neo4j_client.write_processed_doc(pdoc, clear_old=True)
+                graph_written = True
+            else:
+                print(f"    → KG 書き込みスキップ（Neo4j 未接続）")
 
-                registry.mark_done("arxiv", paper.paper_id, graph_written=True)
-                processed.append(paper)
+            registry.mark_done("arxiv", paper.paper_id, graph_written=graph_written)
+            processed.append(paper)
 
-            except Exception as e:
-                err = f"{type(e).__name__}: {e}"
-                print(f"    [ERROR] {err}", file=sys.stderr)
-                registry.mark_failed("arxiv", paper.paper_id, error=err)
+        except Exception as e:
+            err = f"{type(e).__name__}: {e}"
+            print(f"    [ERROR] {err}", file=sys.stderr)
+            registry.mark_failed("arxiv", paper.paper_id, error=err)
+
+    if neo4j_client is not None:
+        neo4j_client.close()
 
     if not processed:
         print("  [arXiv] 処理成功論文なし → ダイジェスト生成スキップ")
