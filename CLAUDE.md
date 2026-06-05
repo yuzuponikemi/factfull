@@ -90,3 +90,10 @@ For the ReAct chapter resolver, the working baseline is:
 
 Avoid `quality_profile="gemma4"` for any book that may touch the body /
 sexuality (most modern philosophy and sociology).
+
+## 長時間パイプライン
+
+- パイプライン出力を `head` や `tail` でパイプしない（SIGPIPE でプロセスが死ぬ）
+- 実行は `python -m pipeline.cli run ... 2>&1 | tee logs/run-$(date +%s).log` の形を使う
+- Ollama の URL は `localhost`。Docker コンテナ内でない限り `host.docker.internal` は使わない
+- バッチスクリプト実行前に `which python` で正しい venv を確認する
