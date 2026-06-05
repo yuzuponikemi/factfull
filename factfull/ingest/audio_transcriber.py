@@ -75,6 +75,11 @@ def transcribe(
         audio_path, language, model_size, device, compute_type
     )
 
+    # Whisper 完了直後にチェックポイント保存（diarize 失敗時に --regen で再利用可能にする）
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        _save_checkpoint(segments_list, detected_lang, duration, output_dir)
+
     # Step 2: 話者分離（オプション）
     if diarize:
         token = hf_token or os.environ.get("HF_TOKEN", "")
@@ -173,7 +178,7 @@ def _run_diarization(
     print("  [diarize] pyannote モデル読み込み中...")
     pipeline = Pipeline.from_pretrained(
         "pyannote/speaker-diarization-3.1",
-        use_auth_token=hf_token,
+        token=hf_token,
     )
 
     # Apple Silicon では MPS を試みる、なければ CPU
@@ -189,8 +194,19 @@ def _run_diarization(
     elif speakers:
         kwargs["num_speakers"] = len(speakers)
 
-    print(f"  [diarize] 話者分離実行中: {audio_path.name} ...")
-    diarization = pipeline(str(audio_path), **kwargs)
+    # MP3 は sample count が不正確なため WAV に変換してから渡す
+    import subprocess, tempfile
+    wav_tmp = Path(tempfile.mktemp(suffix=".wav"))
+    try:
+        print(f"  [diarize] WAV 変換中: {audio_path.name} → {wav_tmp.name} ...")
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(audio_path), "-ar", "16000", "-ac", "1", str(wav_tmp)],
+            check=True, capture_output=True,
+        )
+        print(f"  [diarize] 話者分離実行中: {audio_path.name} ...")
+        diarization = pipeline(str(wav_tmp), **kwargs)
+    finally:
+        wav_tmp.unlink(missing_ok=True)
 
     # pyannote の結果をフラットなリストに変換
     # [(start, end, speaker_label), ...]
@@ -256,6 +272,21 @@ def _assign_speaker(
             best_label = label
 
     return best_label if best_overlap > 0 else None
+
+
+def _save_checkpoint(
+    segments: list[dict], lang: str, duration: float, output_dir: Path
+) -> None:
+    """Whisper 完了直後のチェックポイント。diarize 失敗時も transcript が残る。"""
+    txt_name = f"transcript_{lang or 'xx'}.txt"
+    text = "\n".join(s["text"] for s in segments)
+    (output_dir / txt_name).write_text(text, encoding="utf-8")
+
+    ts_data = {"language": lang, "duration": duration, "diarized": False, "segments": segments}
+    (output_dir / "transcript_timestamped.json").write_text(
+        json.dumps(ts_data, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    print(f"  [whisper] チェックポイント保存: {txt_name}, transcript_timestamped.json")
 
 
 def _save(result: TranscribeResult, output_dir: Path) -> None:

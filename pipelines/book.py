@@ -9,8 +9,11 @@ homupe に Book Guide 記事として投稿する。
   # ファクトチェックのみ
   python pipelines/book.py /path/to/book-research/data/run_20260430_135649
 
-  # ファクトチェック + homupe ブログ投稿
+  # ファクトチェック + レビューエージェント + homupe ブログ投稿
   python pipelines/book.py /path/to/book-research/data/run_20260430_135649 --publish
+
+  # レビュー判定を無視して強制公開
+  python pipelines/book.py /path/to/book-research/data/run_20260430_135649 --publish --force-publish
 
   # book-research の data ディレクトリと book_id で指定（最新 run を自動検出）
   python pipelines/book.py --data-dir /path/to/book-research/data --book plato_republic --publish
@@ -19,8 +22,21 @@ homupe に Book Guide 記事として投稿する。
   HOMUPE_ROOT  homupe リポジトリルート（デフォルト: ~/source/personal/homupe）
 """
 import argparse
+import os
 import sys
 from pathlib import Path
+
+# .env ロード（TAVILY_API_KEY 等）— factfull/.env → book-research/.env の順で探す
+_REPO_ROOT = Path(__file__).parent.parent
+for _env_path in (_REPO_ROOT / ".env", _REPO_ROOT.parent / "book-research" / ".env"):
+    if _env_path.exists():
+        for _line in _env_path.read_text(encoding="utf-8").splitlines():
+            _line = _line.strip()
+            if not _line or _line.startswith("#") or "=" not in _line:
+                continue
+            _k, _v = _line.split("=", 1)
+            os.environ.setdefault(_k.strip(), _v.strip())
+        break
 
 from factfull.book.pipeline import BookPipelineConfig, run_book_pipeline
 
@@ -76,7 +92,17 @@ def main() -> None:
     parser.add_argument(
         "--publish",
         action="store_true",
-        help="homupe ブログへ記事を投稿する",
+        help="homupe ブログへ記事を投稿する（レビューエージェントが通過した場合のみ）",
+    )
+    parser.add_argument(
+        "--force-publish",
+        action="store_true",
+        help="レビューエージェントの判定を無視して強制公開する",
+    )
+    parser.add_argument(
+        "--skip-review",
+        action="store_true",
+        help="レビューエージェントをスキップする",
     )
     args = parser.parse_args()
 
@@ -90,6 +116,29 @@ def main() -> None:
     result = run_book_pipeline(config, run_dir)
     print(f"\n✅ ファクトチェック完了: {result.book_guide_path}")
     print(f"   スコア: {result.score:.0f}/100  /  {result.author} 『{result.book_title}』")
+
+    # ── レビューエージェント ──────────────────────────────────────────────────
+    if not args.skip_review:
+        from factfull.book.review_agent import ReviewAgent
+        reviewer = ReviewAgent(model=META_MODEL)
+        print("\n🔍 レビューエージェント評価中...")
+        decision = reviewer.evaluate(result)
+        print(f"   {decision.emoji()}  判定: {decision.action.upper()}")
+        print(f"   理由: {decision.reason}")
+        for concern in decision.concerns:
+            print(f"   ⚠️  {concern}")
+
+        if decision.action == "redo":
+            print("\n❌ やり直しが必要です。--publish は実行されません。")
+            sys.exit(2)
+
+        if decision.action == "review" and not args.force_publish:
+            print("\n⏸️  人間のレビューを待っています。")
+            print("   公開するには --force-publish を追加して再実行してください。")
+            sys.exit(0)
+
+        if decision.action == "review" and args.force_publish:
+            print("   --force-publish 指定のため判定を上書きして公開します。")
 
     if not args.publish:
         return

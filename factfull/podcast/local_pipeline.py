@@ -99,9 +99,14 @@ def run_local_pipeline(
     mp3_path = Path(mp3_path)
     meta = _resolve_meta(mp3_path, episode_meta, config)
 
-    # 出力ディレクトリ
+    # 出力ディレクトリ（regen 時は既存ディレクトリを優先）
     date_str = datetime.now().strftime("%Y%m%d")
     out_dir = config.output_base / f"{config.source_id}_{date_str}"
+    if regen:
+        existing = sorted(config.output_base.glob(f"{config.source_id}_*"))
+        if existing:
+            out_dir = existing[-1]
+            print(f"  [regen] 既存ディレクトリを使用: {out_dir.name}")
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Step 1: metadata.json
@@ -109,9 +114,39 @@ def run_local_pipeline(
 
     # Step 2: Whisper 文字起こし（スキップ可）
     transcript_path = out_dir / f"transcript_{config.language}.txt"
+    ts_json_path = out_dir / "transcript_timestamped.json"
     if regen and transcript_path.exists():
         print(f"  [regen] 既存 transcript を使用: {transcript_path.name}")
         transcript_text = transcript_path.read_text(encoding="utf-8")
+
+        # --diarize 指定かつ未実施の場合は timestamped.json からセグメントを復元して再実行
+        if config.diarize and ts_json_path.exists():
+            ts_data = json.loads(ts_json_path.read_text(encoding="utf-8"))
+            if not ts_data.get("diarized"):
+                from factfull.ingest.audio_transcriber import _run_diarization, _build_speaker_map
+                import os
+                token = config.hf_token or os.environ.get("HF_TOKEN", "")
+                if token:
+                    print(f"\n🎙️  話者分離を再実行中...")
+                    segments = ts_data["segments"]
+                    labeled = _run_diarization(
+                        mp3_path, segments, token,
+                        config.speakers or None, None,
+                    )
+                    diarized = any("speaker" in s for s in labeled)
+                    if diarized:
+                        text_parts = [
+                            f"[{s['speaker']}] {s['text']}" if s.get("speaker") else s["text"]
+                            for s in labeled
+                        ]
+                        transcript_text = "\n".join(text_parts)
+                        transcript_path.write_text(transcript_text, encoding="utf-8")
+                        ts_data["diarized"] = True
+                        ts_data["segments"] = labeled
+                        ts_json_path.write_text(
+                            json.dumps(ts_data, ensure_ascii=False, indent=2), encoding="utf-8"
+                        )
+                        print(f"  [diarize] 話者分離完了 → transcript_ja.txt 更新")
     else:
         print(f"\n📝 Step 1: Whisper 文字起こし...")
         tr = transcribe(

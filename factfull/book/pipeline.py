@@ -153,6 +153,7 @@ def _extract_author_title(book_id: str, subject: str) -> tuple[str, str]:
         "kaze_no_tani": ("安宅和人", "「風の谷」という希望"),
         "plurality": ("Tang / Weyl", "⿻数位（Plurality）"),
         "baudrillard_consumer_society": ("Baudrillard", "消費社会の神話と構造"),
+        "baudrillard_simulacra": ("Baudrillard", "シミュラークルとシミュレーション"),
         "debord_spectacle": ("Debord", "スペクタクルの社会"),
         "veblen_leisure_class": ("Veblen", "有閑階級の理論"),
         "zuboff_surveillance_capitalism": ("Zuboff", "監視資本主義の時代"),

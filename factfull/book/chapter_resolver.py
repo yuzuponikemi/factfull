@@ -83,12 +83,15 @@ class ChapterResolver:
         ollama_url: str = "http://localhost:11435/api/generate",
         timeout_sec: int = 20,
         wikidata_delay: float = 1.5,
+        wikipedia_delay: float = 0.8,
     ):
         self.model = model
         self.ollama_url = ollama_url
         self.timeout_sec = timeout_sec
         self.wikidata_delay = wikidata_delay
+        self.wikipedia_delay = wikipedia_delay
         self._last_wikidata_call: float = 0.0
+        self._last_wikipedia_call: float = 0.0
         self._wikidata_cache: dict[str, dict[str, str]] = {}
 
     # ── HTTP ユーティリティ ───────────────────────────────────────────────────
@@ -178,7 +181,14 @@ class ChapterResolver:
             print(f"  [chapters] Open Library: {len(toc)} 章  {url}")
             extractions.append((url, toc))
 
-        # 3. 追加 URL
+        # 3. Internet Archive（djvu.txt から CONTENTS を直接取得）
+        ia_result = self._fetch_internet_archive(book_title, author)
+        if ia_result:
+            url, toc = ia_result
+            print(f"  [chapters] Internet Archive: {len(toc)} 章  {url}")
+            extractions.append((url, toc))
+
+        # 4. 追加 URL
         for url in (extra_urls or []):
             text = self._fetch_url_text(url)
             if text:
@@ -189,16 +199,61 @@ class ChapterResolver:
         sources = [url for url, _ in extractions]
         print(f"  [chapters] 抽出完了: {len(extractions)} ソース")
 
+        # extractions が空 → Tavily で最後の試み（Wikipedia がメタセクションのみの書籍対応）
         if not extractions:
-            return ChapterStructure(
-                book_title=book_title, author=author,
-                chapters=[], confidence=0.0,
-                sources_consulted=[], sources_agreed=0,
-                notes="章立て情報が取得できませんでした",
-            )
+            web_toc = self._fetch_web_chapters(book_title, author)
+            if web_toc:
+                print(f"  [chapters] Web Search (fallback): {len(web_toc)} 章")
+                extractions = [("web_search", web_toc)]
+                sources = ["web_search"]
+            else:
+                return ChapterStructure(
+                    book_title=book_title, author=author,
+                    chapters=[], confidence=0.0,
+                    sources_consulted=[], sources_agreed=0,
+                    notes="章立て情報が取得できませんでした",
+                )
 
         chapters, confidence, agreed = self._consensus(extractions)
         print(f"  [chapters] 合意: {len(chapters)} 章  confidence={confidence:.2f}  agreed={agreed}")
+
+        # 4. 最多章数ソース優先採用
+        # consensus よりも章数が多い信頼できるソース（IA > Wikipedia > Web）が存在する場合に採用する。
+        # 言語混在（JA/EN）や IA の完全テキストが consensus を上回るケースへの対応。
+        def _source_priority(url: str) -> int:
+            if "archive.org" in url:
+                return 3   # 原著テキスト最優先
+            if "wikipedia.org" in url:
+                return 2
+            if "web_search" in url:
+                return 1
+            return 0
+
+        best_url, best_toc = max(extractions, key=lambda x: (len(x[1]), _source_priority(x[0])))
+        if len(best_toc) > max(len(chapters), 4) and len(best_toc) > len(chapters) * 1.5:
+            n_validating = sum(1 for url, _ in extractions if url != best_url)
+            best_confidence = round(min(0.85, 0.50 + 0.05 * n_validating), 2)
+            src_label = "Internet Archive" if "archive.org" in best_url else "Wikipedia"
+            print(f"  [chapters] {src_label} 優先採用: {len(best_toc)} 章  confidence={best_confidence:.2f}")
+            chapters, confidence, agreed = best_toc, best_confidence, 1
+
+        # 5. Web 検索フォールバック（consensus + 優先採用でも章が少ない場合）
+        # Wikipedia の記事が書籍章を列挙していない場合（哲学書・思想書に多い）に有効
+        if len(chapters) < 5:
+            web_toc = self._fetch_web_chapters(book_title, author)
+            if web_toc:
+                print(f"  [chapters] Web Search: {len(web_toc)} 章")
+                extractions.append(("web_search", web_toc))
+                sources.append("web_search")
+                new_chapters, new_conf, new_agreed = self._consensus(extractions)
+                print(f"  [chapters] 再合意 (Web込み): {len(new_chapters)} 章  confidence={new_conf:.2f}  agreed={new_agreed}")
+                if len(new_chapters) > len(chapters):
+                    chapters, confidence, agreed = new_chapters, new_conf, new_agreed
+                elif len(web_toc) > len(chapters):
+                    # consensus では改善しないが Web が最多 → Web 単独採用（信頼度は低め）
+                    chapters = web_toc
+                    confidence = round(min(confidence, 0.45), 2)
+                    print(f"  [chapters] Web Search 単独採用: {len(chapters)} 章  confidence={confidence:.2f}")
 
         if translate_to and chapters:
             chapters = self._translate_chapters(chapters, translate_to)
@@ -233,14 +288,18 @@ class ChapterResolver:
             return self._http_get_json(url, throttle=True).get("search", [])
 
         def _pick_qid(results: list[dict]) -> str:
-            """著者名が説明文に含まれる結果を優先して QID を選ぶ。"""
+            """著者名が説明文に含まれる結果を優先して QID を選ぶ。
+
+            description のみで照合する（label は長い作品タイトルを含むため除外）。
+            例: "1491 edition of The Divine Comedy ... Alighieri" のようなラベルで
+                誤マッチするのを防ぐ。
+            """
             if not results:
                 return ""
             if author_last:
                 for item in results:
                     desc = (item.get("description") or "").lower()
-                    label = (item.get("label") or "").lower()
-                    if author_last in desc or author_last in label:
+                    if author_last in desc:
                         return item["id"]
             return results[0]["id"]
 
@@ -283,11 +342,15 @@ class ChapterResolver:
 
             # 試行2: 最良候補が書籍エンティティでなければ著者名付きで再検索
             best = next((r for r in results if r["id"] == qid), None)
-            if not qid or (best and not _is_book_candidate(best)):
+            best_is_book = best and _is_book_candidate(best)
+            if not qid or not best_is_book:
                 results2 = _search_wikidata(f"{book_title} {author}")
                 qid2 = _pick_qid(results2)
                 if qid2:
                     qid = qid2
+                elif not best_is_book:
+                    # 著者名付きでも見つからず、元候補も書籍でない → 誤マッチを避けて空を返す
+                    return {}
 
             result = _get_sitelinks(qid) if qid else {}
             if result:
@@ -300,26 +363,35 @@ class ChapterResolver:
     def _find_wikipedia_title_opensearch(
         self, book_title: str, author: str, lang: str
     ) -> str:
-        """OpenSearch で Wikipedia 記事タイトルを特定する（Wikidata フォールバック用）。"""
-        query = f"{book_title} {author}"
-        url = (
-            f"https://{lang}.wikipedia.org/w/api.php"
-            f"?action=opensearch&search={urllib.parse.quote(query)}&limit=5&format=json"
-        )
-        req = urllib.request.Request(url, headers={"User-Agent": "factfull/1.0"})
-        for attempt in range(3):
-            try:
-                with urllib.request.urlopen(req, timeout=self.timeout_sec) as resp:
-                    data = json.loads(resp.read())
-                titles = data[1]
-                return titles[0] if titles else ""
-            except urllib.error.HTTPError as e:
-                if e.code == 429 and attempt < 2:
-                    time.sleep(2 ** (attempt + 1))
-                else:
+        """OpenSearch で Wikipedia 記事タイトルを特定する（Wikidata フォールバック用）。
+
+        Wikipedia の記事タイトルは著者名を含まないため、タイトルのみで検索する。
+        """
+        for query in (book_title, f"{book_title} {author}"):
+            url = (
+                f"https://{lang}.wikipedia.org/w/api.php"
+                f"?action=opensearch&search={urllib.parse.quote(query)}&limit=5&format=json"
+            )
+            req = urllib.request.Request(url, headers={"User-Agent": "factfull/1.0"})
+            elapsed = time.monotonic() - self._last_wikipedia_call
+            if elapsed < self.wikipedia_delay:
+                time.sleep(self.wikipedia_delay - elapsed)
+            for attempt in range(3):
+                self._last_wikipedia_call = time.monotonic()
+                try:
+                    with urllib.request.urlopen(req, timeout=self.timeout_sec) as resp:
+                        data = json.loads(resp.read())
+                    titles = data[1]
+                    if titles:
+                        return titles[0]
+                    break  # empty result → try next query variant
+                except urllib.error.HTTPError as e:
+                    if e.code == 429 and attempt < 2:
+                        time.sleep(2 ** (attempt + 1))
+                    else:
+                        return ""
+                except Exception:
                     return ""
-            except Exception:
-                return ""
         return ""
 
     def _fetch_wikipedia_sections(
@@ -335,7 +407,13 @@ class ChapterResolver:
             article_title: Wikidata 経由で解決済みのタイトル（なければ OpenSearch で検索）
         """
         if not article_title:
-            article_title = self._find_wikipedia_title_opensearch(book_title, author, lang)
+            # OpenSearch is only reliable for English Wikipedia with non-CJK titles.
+            # - Other languages often return wrong articles.
+            # - CJK titles (Japanese/Chinese) without Wikidata resolution should not
+            #   fall back to EN OpenSearch: "風土" → "Fudoki" (wrong article).
+            _has_cjk = bool(re.search(r"[　-鿿가-힯]", book_title))
+            if lang == "en" and not _has_cjk:
+                article_title = self._find_wikipedia_title_opensearch(book_title, author, lang)
         if not article_title:
             return "", []
 
@@ -346,7 +424,11 @@ class ChapterResolver:
         )
         page_url = f"https://{lang}.wikipedia.org/wiki/{urllib.parse.quote(article_title)}"
         req = urllib.request.Request(api_url, headers={"User-Agent": "factfull/1.0"})
+        elapsed = time.monotonic() - self._last_wikipedia_call
+        if elapsed < self.wikipedia_delay:
+            time.sleep(self.wikipedia_delay - elapsed)
         for attempt in range(3):
+            self._last_wikipedia_call = time.monotonic()
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout_sec) as resp:
                     data = json.loads(resp.read())
@@ -499,6 +581,133 @@ class ChapterResolver:
             pass
         return None
 
+    # ── Internet Archive ──────────────────────────────────────────────────────
+
+    def _fetch_internet_archive(
+        self, book_title: str, author: str
+    ) -> tuple[str, list[ChapterEntry]] | None:
+        """Internet Archive の djvu.txt から CONTENTS セクションを取得して章立てを抽出する。
+
+        djvu.txt は OCR テキストで目次がほぼそのまま含まれており、
+        Wikipedia よりはるかに完全な章立てが得られる。
+        """
+        author_last = author.strip().split()[-1] if author.strip() else author
+        query = f"{book_title} {author_last} mediatype:texts"
+        search_url = (
+            f"https://archive.org/advancedsearch.php"
+            f"?q={urllib.parse.quote(query)}&fl[]=identifier&fl[]=title"
+            f"&rows=5&output=json"
+        )
+        try:
+            with urllib.request.urlopen(
+                urllib.request.Request(search_url, headers={"User-Agent": "factfull/1.0"}),
+                timeout=self.timeout_sec,
+            ) as resp:
+                results = json.loads(resp.read()).get("response", {}).get("docs", [])
+        except Exception:
+            return None
+
+        for doc in results:
+            ia_id = doc.get("identifier", "")
+            if not ia_id:
+                continue
+
+            # ファイル一覧を取得して djvu.txt を探す
+            try:
+                meta_url = f"https://archive.org/metadata/{ia_id}"
+                with urllib.request.urlopen(
+                    urllib.request.Request(meta_url, headers={"User-Agent": "factfull/1.0"}),
+                    timeout=self.timeout_sec,
+                ) as resp:
+                    meta = json.loads(resp.read())
+            except Exception:
+                continue
+
+            djvu_file = next(
+                (f["name"] for f in meta.get("files", []) if f.get("name", "").endswith("_djvu.txt")),
+                None,
+            )
+            if not djvu_file:
+                continue
+
+            txt_url = f"https://archive.org/download/{ia_id}/{urllib.parse.quote(djvu_file)}"
+            try:
+                with urllib.request.urlopen(
+                    urllib.request.Request(txt_url, headers={"User-Agent": "factfull/1.0"}),
+                    timeout=self.timeout_sec,
+                ) as resp:
+                    # 先頭15KBだけ読む（CONTENTS は冒頭にある）
+                    raw = resp.read(15000).decode("utf-8", errors="replace")
+            except Exception:
+                continue
+
+            # CONTENTS セクションを抽出
+            idx = raw.upper().find("CONTENTS")
+            if idx == -1:
+                # CONTENTS がなければ先頭から LLM に渡す
+                excerpt = raw[:8000]
+            else:
+                excerpt = raw[idx: idx + 3000]
+
+            toc = self._extract_toc_with_llm(excerpt, f"Internet Archive: {ia_id}")
+            if toc:
+                return txt_url, toc
+
+        return None
+
+    # ── Web 検索 ──────────────────────────────────────────────────────────────
+
+    def _fetch_web_chapters(self, book_title: str, author: str) -> list[ChapterEntry]:
+        """Tavily Web 検索で目次情報を取得し LLM で章立てを抽出する。
+
+        TAVILY_API_KEY が未設定の場合は空リストを返す。
+        Wikipedia で章が少ない書籍（哲学書・思想書など）に有効。
+        """
+        import os
+        api_key = os.environ.get("TAVILY_API_KEY", "")
+        if not api_key:
+            return []
+
+        try:
+            from tavily import TavilyClient  # type: ignore
+        except ImportError:
+            return []
+
+        client = TavilyClient(api_key=api_key)
+        queries = [
+            f"{book_title} {author} chapters table of contents",
+            f"{book_title} 目次 章立て",
+        ]
+
+        parts: list[str] = []
+        seen_urls: set[str] = set()
+        for query in queries:
+            try:
+                resp = client.search(
+                    query=query,
+                    max_results=5,
+                    search_depth="basic",
+                    include_answer=True,
+                )
+                if resp.get("answer"):
+                    parts.append(f"[Web Summary]\n{resp['answer']}")
+                for item in resp.get("results", []):
+                    url = item.get("url", "")
+                    if url in seen_urls:
+                        continue
+                    seen_urls.add(url)
+                    title = item.get("title", "")
+                    content = item.get("content", "")[:1500]
+                    parts.append(f"[{title}] ({url})\n{content}")
+            except Exception as e:
+                print(f"  ⚠️  Tavily 検索エラー: {e}", flush=True)
+
+        if not parts:
+            return []
+
+        combined = "\n\n".join(parts)
+        return self._extract_toc_with_llm(combined, f"Web Search: {book_title}")
+
     # ── 追加 URL ──────────────────────────────────────────────────────────────
 
     def _fetch_url_text(self, url: str) -> str:
@@ -548,7 +757,7 @@ class ChapterResolver:
                 "model": self.model,
                 "prompt": prompt,
                 "stream": False,
-                "options": {"temperature": 0.0, "num_predict": 800},
+                "options": {"temperature": 0.0, "num_predict": 2000},
             }).encode()
             req = urllib.request.Request(
                 self.ollama_url,
@@ -556,7 +765,7 @@ class ChapterResolver:
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            with urllib.request.urlopen(req, timeout=120) as resp:
                 result = json.loads(resp.read())
 
             raw = result.get("response", "").strip()
@@ -613,7 +822,7 @@ class ChapterResolver:
                 "model": self.model,
                 "prompt": prompt,
                 "stream": False,
-                "options": {"temperature": 0.0, "num_predict": 1200},
+                "options": {"temperature": 0.0, "num_predict": 2000},
             }).encode()
 
             req = urllib.request.Request(
@@ -622,7 +831,7 @@ class ChapterResolver:
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=90) as resp:
+            with urllib.request.urlopen(req, timeout=120) as resp:
                 result = json.loads(resp.read())
 
             raw = result.get("response", "").strip()
@@ -632,12 +841,12 @@ class ChapterResolver:
             entries = json.loads(m.group(0))
             return [
                 ChapterEntry(
-                    title=str(e.get("title", "")).strip(),
-                    num=str(e.get("num", "")).strip(),
-                    part=str(e.get("part", "")).strip(),
+                    title=str(e.get("title") or "").strip(),
+                    num=str(e.get("num") or "").strip(),
+                    part=str(e.get("part") or "").strip(),
                 )
                 for e in entries
-                if str(e.get("title", "")).strip()
+                if str(e.get("title") or "").strip()
             ]
         except Exception:
             return []

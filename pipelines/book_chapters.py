@@ -26,9 +26,22 @@
 """
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
+
+# .env ロード（TAVILY_API_KEY 等）— factfull/.env → book-research/.env の順で探す
+_REPO_ROOT = Path(__file__).parent.parent
+for _env_path in (_REPO_ROOT / ".env", _REPO_ROOT.parent / "book-research" / ".env"):
+    if _env_path.exists():
+        for _line in _env_path.read_text(encoding="utf-8").splitlines():
+            _line = _line.strip()
+            if not _line or _line.startswith("#") or "=" not in _line:
+                continue
+            _k, _v = _line.split("=", 1)
+            os.environ.setdefault(_k.strip(), _v.strip())
+        break
 
 
 def main() -> None:
