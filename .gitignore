@@ -31,6 +31,10 @@ config/launchd/
 logs/
 *.log
 
+# Nightly supervisor: local secrets + state
+supervisor/nightly.env
+supervisor/logs/
+
 # Runtime databases / gbrain
 registry.json
 .gbrain-source
