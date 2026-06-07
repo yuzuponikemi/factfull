@@ -40,6 +40,7 @@ Failure classification and recovery:
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -54,6 +55,11 @@ MAX_OLLAMA_RETRIES = 3
 
 # nightly_pipeline.py runs from the factfull repo root.
 PIPELINE_SCRIPT = "nightly_pipeline.py"
+
+
+def _uv() -> str:
+    """Absolute path to uv. PATH is unreliable under launchd (no ~/.local/bin)."""
+    return shutil.which("uv") or os.path.expanduser("~/.local/bin/uv")
 
 import logging  # noqa: E402
 
@@ -118,7 +124,10 @@ def _run_pipeline(
 
     Returns on success; raises Escalate on unrecoverable failure.
     """
-    cmd = ["uv", "run", "python", PIPELINE_SCRIPT, *pipeline_args]
+    # Run nightly_pipeline.py with the same venv interpreter that runs the
+    # supervisor (sys.executable = factfull/.venv/bin/python). This avoids
+    # depending on `uv` being on PATH, which it is not under launchd.
+    cmd = [sys.executable, PIPELINE_SCRIPT, *pipeline_args]
     if dry_run:
         cmd.append("--dry-run")
     if regen:
@@ -218,7 +227,7 @@ def _publish(homupe_dir: Path) -> list[str]:
 
     log.info("Strict mkdocs build before push...")
     build = subprocess.run(
-        ["uv", "run", "mkdocs", "build", "--strict"],
+        [_uv(), "run", "mkdocs", "build", "--strict"],
         cwd=homupe_dir,
         capture_output=True,
         text=True,
