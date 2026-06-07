@@ -208,13 +208,24 @@ def _changed_posts(homupe_dir: Path) -> list[str]:
     return posts
 
 
-def _publish(homupe_dir: Path) -> list[str]:
-    """Strict-build homupe, then commit+push changes. Returns published posts.
+def _git(homupe_dir: Path, *args: str) -> subprocess.CompletedProcess:
+    """Run a git command in homupe, raising Escalate on failure (clean notify)."""
+    r = subprocess.run(["git", *args], cwd=homupe_dir, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise Escalate(
+            f"git {' '.join(args)} failed:\n{(r.stdout + r.stderr).strip()[-800:]}"
+        )
+    return r
 
-    Raises Escalate if the strict build fails (does NOT push in that case).
+
+def _publish(homupe_dir: Path) -> list[str]:
+    """Strict-build homupe, then commit+push to main. Returns published posts.
+
+    Raises Escalate (→ notify) on strict-build failure or any git failure, so
+    a problem surfaces as a notification instead of an uncaught traceback.
     """
     posts = _changed_posts(homupe_dir)
-    # any tracked changes at all under the publish paths?
+    # untracked new posts also show here (git status --porcelain lists `??`)
     dirty = subprocess.run(
         ["git", "status", "--porcelain", *PUBLISH_PATHS],
         cwd=homupe_dir,
@@ -224,6 +235,15 @@ def _publish(homupe_dir: Path) -> list[str]:
     if not dirty:
         log.info("No homupe changes to publish")
         return []
+
+    # Nightly posts belong on main. New post files are untracked, so switching
+    # branches carries them along. If a tracked file would conflict, _git
+    # escalates rather than committing to the wrong branch (which strands the
+    # post — exactly the failure this guards against).
+    current = _git(homupe_dir, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    if current != "main":
+        log.info("homupe is on %r — switching to main to publish", current)
+        _git(homupe_dir, "checkout", "main")
 
     log.info("Strict mkdocs build before push...")
     build = subprocess.run(
@@ -238,14 +258,12 @@ def _publish(homupe_dir: Path) -> list[str]:
             + "\n".join((build.stdout + build.stderr).splitlines()[-40:])
         )
 
-    subprocess.run(["git", "add", *PUBLISH_PATHS], cwd=homupe_dir, check=True)
     label = f"{len(posts)} 件" if posts else "更新"
-    subprocess.run(
-        ["git", "commit", "-m", f"post: nightly pipeline — {label}"],
-        cwd=homupe_dir,
-        check=True,
-    )
-    subprocess.run(["git", "push", "origin", "main"], cwd=homupe_dir, check=True)
+    _git(homupe_dir, "add", *PUBLISH_PATHS)
+    _git(homupe_dir, "commit", "-m", f"post: nightly pipeline — {label}")
+    # Integrate remote first so a moved origin/main doesn't reject the push.
+    _git(homupe_dir, "pull", "--rebase", "origin", "main")
+    _git(homupe_dir, "push", "origin", "main")
     log.info("Pushed homupe (%s)", label)
     return posts
 
@@ -264,6 +282,8 @@ def main() -> None:
                         help="Restrict to one channel id (passed to nightly_pipeline)")
     parser.add_argument("--skip-arxiv", action="store_true",
                         help="Skip the arXiv phase (passed to nightly_pipeline)")
+    parser.add_argument("--regen", action="store_true",
+                        help="Reuse cached podcast output (skip re-download/translate)")
     args = parser.parse_args()
 
     sys.path.insert(0, str(SUPERVISOR_DIR))
@@ -293,7 +313,7 @@ def main() -> None:
     start_time = time.time()
 
     try:
-        _run_pipeline(pipeline_args, log_path, dry_run=args.dry_run)
+        _run_pipeline(pipeline_args, log_path, regen=args.regen, dry_run=args.dry_run)
     except Escalate as exc:
         log.error("⚠️  Escalating: %s", exc)
         tail = "\n".join(log_path.read_text(errors="replace").splitlines()[-80:])
