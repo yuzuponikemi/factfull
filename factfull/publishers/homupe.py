@@ -217,6 +217,12 @@ def create_blog_post(
 
     tags_yaml = "\n".join(f"  - {t}" for t in meta.tags)
 
+    graph_section = _concept_graph_section(
+        result.video_id,
+        blog_dir,
+        "ポッドキャストの主要概念と関係をグラフで表示しています。ノードにカーソルを当てると詳細が表示されます。",
+    )
+
     post = f"""---
 date: {meta.date}
 categories:
@@ -231,14 +237,8 @@ tags:
 
 <!-- more -->
 
-## 概念グラフ
-ポッドキャストの主要概念と関係をグラフで表示しています。ノードにカーソルを当てると詳細が表示されます。
-
-<div class="kg-widget" data-src="/data/kg/{result.video_id}.json" data-height="630"></div>
-
-{summary.strip()}
+{graph_section}{summary.strip()}
 """
-    _export_kg_json(result.video_id, blog_dir)
     out_path.write_text(post, encoding="utf-8")
     print(f"  ✅ 作成: {out_path}")
     print(f"     タイトル: {meta.title_ja}")
@@ -501,6 +501,23 @@ def _export_kg_json(source_id: str, blog_dir: Path) -> bool:
         return False
 
 
+def _concept_graph_section(source_id: str, blog_dir: Path, intro: str) -> str:
+    """KG JSON をエクスポートできた場合のみ概念グラフセクションの Markdown を返す。
+
+    エクスポート失敗時（Neo4j 未起動・グラフデータなし）は空文字列を返す。
+    こうすることで、存在しない JSON を参照して kg-widget が
+    「読み込みエラー: HTTP 404」になる記事が生成されるのを防ぐ。
+    """
+    if not _export_kg_json(source_id, blog_dir):
+        print(f"  ⚠️  概念グラフを省略（KG JSON なし）: {source_id}")
+        return ""
+    return (
+        "## 概念グラフ\n"
+        f"{intro}\n\n"
+        f'<div class="kg-widget" data-src="/data/kg/{source_id}.json" data-height="630"></div>\n\n'
+    )
+
+
 # ── Book Guide Publisher ───────────────────────────────────────────────────────
 
 _BOOK_META_PROMPT = """\
@@ -613,6 +630,12 @@ def create_book_guide_post(
     guide_text = result.book_guide_path.read_text(encoding="utf-8")
     tags_yaml = "\n".join(f"  - {t}" for t in meta.tags)
 
+    graph_section = _concept_graph_section(
+        result.book_id,
+        blog_dir,
+        "本書の核心概念と概念間の依存・矛盾・発展関係をグラフで表示しています。ノードにカーソルを当てると詳細が表示されます。",
+    )
+
     post = f"""---
 title: {meta.title_ja}
 date: {meta.date}
@@ -628,14 +651,8 @@ tags:
 
 <!-- more -->
 
-## 概念グラフ
-本書の核心概念と概念間の依存・矛盾・発展関係をグラフで表示しています。ノードにカーソルを当てると詳細が表示されます。
-
-<div class="kg-widget" data-src="/data/kg/{result.book_id}.json" data-height="630"></div>
-
-{guide_text.strip()}
+{graph_section}{guide_text.strip()}
 """
-    _export_kg_json(result.book_id, blog_dir)
     out_path.write_text(post, encoding="utf-8")
     print(f"  ✅ 作成: {out_path}")
     print(f"     タイトル: {meta.title_ja}")
@@ -687,6 +704,12 @@ def create_local_podcast_post(
         ep_info_lines.append(f"**再生時間**: {duration}")
     ep_info = "  \n".join(ep_info_lines)
 
+    graph_section = _concept_graph_section(
+        result.video_id,
+        blog_dir,
+        "ポッドキャストの主要概念と関係をグラフで表示しています。ノードにカーソルを当てると詳細が表示されます。",
+    )
+
     post = f"""---
 date: {meta.date}
 categories:
@@ -703,14 +726,8 @@ tags:
 
 {ep_info}
 
-## 概念グラフ
-ポッドキャストの主要概念と関係をグラフで表示しています。ノードにカーソルを当てると詳細が表示されます。
-
-<div class="kg-widget" data-src="/data/kg/{result.video_id}.json" data-height="630"></div>
-
-{summary.strip()}
+{graph_section}{summary.strip()}
 """
-    _export_kg_json(result.video_id, blog_dir)
     out_path.write_text(post, encoding="utf-8")
     print(f"  ✅ 作成: {out_path}")
     print(f"     タイトル: {meta.title_ja}")
