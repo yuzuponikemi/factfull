@@ -13,6 +13,7 @@ factfull/bilingual/extract.py
 """
 from __future__ import annotations
 
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 from hashlib import md5
@@ -193,6 +194,140 @@ def _extract_tables(page, page_index: int, pymupdf) -> list[RawBlock]:
     return out
 
 
+def _cluster_rects(rects: list, gap: float):
+    """y 昇順に矩形を貪欲マージし、(union_rect, n_paths) のクラスタ列を返す。"""
+    clusters: list[list] = []
+    for r in sorted(rects, key=lambda r: r.y0):
+        if clusters and r.y0 <= clusters[-1][0].y1 + gap:
+            clusters[-1][0] |= r
+            clusters[-1][1] += 1
+        else:
+            clusters.append([r.__class__(r), 1])
+    return clusters
+
+
+_FIG_CAPTION = re.compile(r"^(figure|fig\.?)\s*\d+\s*[:.]", re.IGNORECASE)
+
+
+def _figure_caption_boxes(page_dict: dict) -> list[tuple]:
+    """ページ内の図キャプション（'Figure N:' / 'Figure N.'）の bbox を返す。"""
+    out: list[tuple] = []
+    for blk in page_dict.get("blocks", []):
+        if blk.get("type", 0) != 0:
+            continue
+        txt = "".join(
+            s.get("text", "")
+            for ln in blk.get("lines", []) for s in ln.get("spans", [])
+        ).strip()
+        if _FIG_CAPTION.match(txt):
+            out.append(tuple(round(float(v), 1) for v in blk.get("bbox", (0, 0, 0, 0))))
+    return out
+
+
+def _anchored_by_caption(box: tuple, caption_boxes: list[tuple]) -> bool:
+    """図領域 box に隣接（直上 or 直下、横方向に重なる）する図キャプションがあるか。"""
+    for cb in caption_boxes:
+        h_overlap = not (cb[2] < box[0] - 10 or cb[0] > box[2] + 10)
+        if not h_overlap:
+            continue
+        below = -6.0 <= cb[1] - box[3] <= 48.0     # キャプションが図の直下
+        above = -6.0 <= box[1] - cb[3] <= 48.0     # キャプションが図の直上
+        if below or above:
+            return True
+    return False
+
+
+def _extract_vector_figures(
+    page, page_index: int, pymupdf, exclude_rects: list, caption_boxes: list[tuple],
+) -> list[RawBlock]:
+    """ベクター描画（get_drawings）の密集領域のうち、図キャプションが隣接する
+    ものだけを図として描画・抽出する。
+
+    ResNet 等の図は埋め込みラスタでなくベクターグラフィックスで pymupdf の
+    画像ブロックに現れない（figure=0）。描画パスをカラム別に縦クラスタ化し、
+    「直上/直下に Figure N キャプションがある」クラスタのみ採用することで、
+    数式・装飾・罫線などのベクターを図と誤認しない（精度優先）。
+    既存の表/画像領域と重なるクラスタは二重取得を避けて除外する。
+    """
+    if not caption_boxes:
+        return []
+    try:
+        drawings = page.get_drawings()
+    except Exception:
+        return []
+    rects = [
+        d["rect"] for d in drawings
+        if d.get("rect") is not None and d["rect"].width > 1 and d["rect"].height > 1
+    ]
+    if len(rects) < 4:
+        return []
+
+    pw = float(page.rect.width)
+    ph = float(page.rect.height)
+    page_area = pw * ph
+    mid = pw / 2.0
+
+    # カラム別に分離（カラム跨ぎの誤マージを防ぐ）
+    full = [r for r in rects if r.width > pw * 0.55]
+    left = [r for r in rects if r.width <= pw * 0.55 and (r.x0 + r.x1) / 2 < mid]
+    right = [r for r in rects if r.width <= pw * 0.55 and (r.x0 + r.x1) / 2 >= mid]
+
+    boxes: list = []
+    for group in (full, left, right):
+        for rect, n_paths in _cluster_rects(group, gap=16.0):
+            if n_paths < 4:
+                continue
+            if rect.width < pw * 0.16 or rect.height < 36:
+                continue
+            if rect.height > ph * 0.85:               # 全面背景は除外
+                continue
+            if rect.width * rect.height < page_area * 0.012:
+                continue
+            box = tuple(round(v, 1) for v in (rect.x0, rect.y0, rect.x1, rect.y1))
+            if not _anchored_by_caption(box, caption_boxes):
+                continue                              # キャプション無し＝図でない可能性大
+            if any(_rect_overlaps(box, ex, tol=6.0) for ex in exclude_rects):
+                continue                              # 既存の表/画像と重複
+            boxes.append(box)
+
+    # 1 つの図が内部の空白で複数クラスタに割れることがあるので、近接領域を結合する
+    boxes = _merge_boxes(boxes, gap=22.0)
+
+    out: list[RawBlock] = []
+    for box in boxes:
+        try:
+            pix = page.get_pixmap(clip=pymupdf.Rect(box), dpi=150)
+        except Exception:
+            continue
+        out.append(RawBlock(
+            kind="image", page=page_index + 1, bbox=box,
+            image_bytes=pix.tobytes("png"), image_ext="png",
+        ))
+    return out
+
+
+def _merge_boxes(boxes: list[tuple], gap: float) -> list[tuple]:
+    """重なる / gap 以内で近接する矩形を反復的に結合する。"""
+    boxes = list(boxes)
+    merged = True
+    while merged:
+        merged = False
+        out: list[tuple] = []
+        for b in boxes:
+            for i, o in enumerate(out):
+                near = not (b[2] < o[0] - gap or b[0] > o[2] + gap or
+                            b[3] < o[1] - gap or b[1] > o[3] + gap)
+                if near:
+                    out[i] = (min(b[0], o[0]), min(b[1], o[1]),
+                              max(b[2], o[2]), max(b[3], o[3]))
+                    merged = True
+                    break
+            else:
+                out.append(b)
+        boxes = out
+    return boxes
+
+
 # ── 公開 API ───────────────────────────────────────────────────────────────────
 
 def extract_structured_blocks(
@@ -219,10 +354,26 @@ def extract_structured_blocks(
             page_area = page_width * float(page.rect.height)
             d = page.get_text("dict")
 
-            tables = _extract_tables(page, pno, pymupdf)
+            # 埋め込みラスタ画像の領域（ベクター図がこれと重複しないよう先に集める）
+            raster_rects = [
+                tuple(round(float(v), 1) for v in blk.get("bbox", (0, 0, 0, 0)))
+                for blk in d.get("blocks", [])
+                if blk.get("type", 0) == 1 and blk.get("image")
+            ]
+            caption_boxes = _figure_caption_boxes(d)
+            vec_figs = _extract_vector_figures(
+                page, pno, pymupdf, raster_rects, caption_boxes
+            )
+            vec_rects = [f.bbox for f in vec_figs]
+
+            # ベクター図と重なる find_tables 検出（図中の格子の誤検出）は捨てる
+            tables = [
+                t for t in _extract_tables(page, pno, pymupdf)
+                if not any(_rect_overlaps(t.bbox, vr, tol=6.0) for vr in vec_rects)
+            ]
             table_rects = [t.bbox for t in tables]
 
-            page_blocks: list[RawBlock] = list(tables)
+            page_blocks: list[RawBlock] = list(tables) + list(vec_figs)
 
             for blk in d.get("blocks", []):
                 bbox = tuple(round(float(v), 1) for v in blk.get("bbox", (0, 0, 0, 0)))
@@ -243,8 +394,8 @@ def extract_structured_blocks(
                     ))
                     continue
 
-                # テキストブロック: 表領域に含まれるものは表に取り込み済みなので除外
-                if any(_rect_overlaps(bbox, tr) for tr in table_rects):
+                # テキストブロック: 表/ベクター図 領域内のものは図表に取り込み済みなので除外
+                if any(_rect_overlaps(bbox, tr) for tr in table_rects + vec_rects):
                     continue
                 size, bold, text = _dominant_font(blk)
                 if not text.strip():
