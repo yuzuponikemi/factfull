@@ -207,20 +207,93 @@ def _cluster_rects(rects: list, gap: float):
 
 
 _FIG_CAPTION = re.compile(r"^(figure|fig\.?)\s*\d+\s*[:.]", re.IGNORECASE)
+_TABLE_CAPTION = re.compile(r"^table\s*\d+\s*[:.]", re.IGNORECASE)
+
+
+def _block_text(blk: dict) -> str:
+    """テキストブロックの連結文字列。"""
+    return "".join(
+        s.get("text", "")
+        for ln in blk.get("lines", []) for s in ln.get("spans", [])
+    ).strip()
 
 
 def _figure_caption_boxes(page_dict: dict) -> list[tuple]:
     """ページ内の図キャプション（'Figure N:' / 'Figure N.'）の bbox を返す。"""
     out: list[tuple] = []
     for blk in page_dict.get("blocks", []):
-        if blk.get("type", 0) != 0:
-            continue
-        txt = "".join(
-            s.get("text", "")
-            for ln in blk.get("lines", []) for s in ln.get("spans", [])
-        ).strip()
-        if _FIG_CAPTION.match(txt):
+        if blk.get("type", 0) == 0 and _FIG_CAPTION.match(_block_text(blk)):
             out.append(tuple(round(float(v), 1) for v in blk.get("bbox", (0, 0, 0, 0))))
+    return out
+
+
+def _extract_text_tables(
+    page, page_dict: dict, page_index: int, pymupdf, exclude_rects: list,
+) -> list[RawBlock]:
+    """罫線の無いテキスト整列表（find_tables が検出できない）を捕捉する。
+
+    'Table N' キャプション直下に並ぶ「短いセル（1 行・少数文字）が複数列に整列
+    した密集領域」を表とみなし、その領域をレンダリングして表画像にする。これに
+    より、バラバラのセルが段落として文字化け翻訳されるのを防ぎ、孤立しがちな
+    Table キャプションに表本体を与える。VGG（罫線ゼロのテキスト表）が典型例。
+    """
+    text_blocks = [b for b in page_dict.get("blocks", []) if b.get("type", 0) == 0]
+    cap_blocks = [b for b in text_blocks if _TABLE_CAPTION.match(_block_text(b))]
+    if not cap_blocks:
+        return []
+
+    pw = float(page.rect.width)
+
+    def is_prose(b: dict) -> bool:
+        t = _block_text(b)
+        w = b["bbox"][2] - b["bbox"][0]
+        return len(t) > 120 and w > pw * 0.35
+
+    out: list[RawBlock] = []
+    for cap in cap_blocks:
+        cap_box = cap["bbox"]
+        # キャプション直下のセル候補を y 昇順に収集
+        below = sorted(
+            (b for b in text_blocks
+             if b is not cap and b["bbox"][1] >= cap_box[3] - 2),
+            key=lambda b: b["bbox"][1],
+        )
+        cells: list[dict] = []
+        prev_y = cap_box[3]
+        for b in below:
+            if _TABLE_CAPTION.match(_block_text(b)) or _FIG_CAPTION.match(_block_text(b)):
+                break
+            if is_prose(b):
+                break
+            if cells and b["bbox"][1] - prev_y > 34:   # 大きな縦ギャップ＝表の外
+                break
+            if len(_block_text(b)) > 60:               # 長い行＝セルでない
+                break
+            cells.append(b)
+            prev_y = b["bbox"][3]
+
+        # 表らしさ: 十分なセル数 ＋ 複数列（distinct x が 3 以上）
+        if len(cells) < 8:
+            continue
+        col_buckets = {round(b["bbox"][0] / 20) for b in cells}
+        if len(col_buckets) < 3:
+            continue
+
+        x0 = min(b["bbox"][0] for b in cells)
+        y0 = min(b["bbox"][1] for b in cells)
+        x1 = max(b["bbox"][2] for b in cells)
+        y1 = max(b["bbox"][3] for b in cells)
+        box = tuple(round(v, 1) for v in (x0, y0, x1, y1))
+        if any(_rect_overlaps(box, ex, tol=6.0) for ex in exclude_rects):
+            continue
+        try:
+            pix = page.get_pixmap(clip=pymupdf.Rect(box), dpi=150)
+        except Exception:
+            continue
+        out.append(RawBlock(
+            kind="table", page=page_index + 1, bbox=box,
+            image_bytes=pix.tobytes("png"), image_ext="png",
+        ))
     return out
 
 
@@ -354,12 +427,15 @@ def extract_structured_blocks(
             page_area = page_width * float(page.rect.height)
             d = page.get_text("dict")
 
-            # 埋め込みラスタ画像の領域（ベクター図がこれと重複しないよう先に集める）
-            raster_rects = [
-                tuple(round(float(v), 1) for v in blk.get("bbox", (0, 0, 0, 0)))
-                for blk in d.get("blocks", [])
-                if blk.get("type", 0) == 1 and blk.get("image")
-            ]
+            # 残す埋め込みラスタ画像の領域（ベクター図/テキスト表がこれと重複
+            # しないよう先に集める）。ノイズ画像は除外済みの基準で判定する。
+            raster_rects = []
+            for blk in d.get("blocks", []):
+                if blk.get("type", 0) != 1 or not blk.get("image"):
+                    continue
+                bb = tuple(round(float(v), 1) for v in blk.get("bbox", (0, 0, 0, 0)))
+                if _keep_image(bb[2] - bb[0], bb[3] - bb[1], page_area):
+                    raster_rects.append(bb)
             caption_boxes = _figure_caption_boxes(d)
             vec_figs = _extract_vector_figures(
                 page, pno, pymupdf, raster_rects, caption_boxes
@@ -371,6 +447,12 @@ def extract_structured_blocks(
                 t for t in _extract_tables(page, pno, pymupdf)
                 if not any(_rect_overlaps(t.bbox, vr, tol=6.0) for vr in vec_rects)
             ]
+            # 罫線無しテキスト表（find_tables が拾えない）をキャプション基準で捕捉
+            text_tables = _extract_text_tables(
+                page, d, pno, pymupdf,
+                raster_rects + vec_rects + [t.bbox for t in tables],
+            )
+            tables += text_tables
             table_rects = [t.bbox for t in tables]
 
             page_blocks: list[RawBlock] = list(tables) + list(vec_figs)
