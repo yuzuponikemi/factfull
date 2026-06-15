@@ -243,6 +243,19 @@ def _extract_text_tables(
         return []
 
     pw = float(page.rect.width)
+    mid = pw / 2.0
+
+    # ページが 2 段組か。単段ページの幅広表のセルを 2 段組と誤認しないよう、
+    # 「カラム幅の散文ブロック（長文）」が左右両方にあるかで判定する
+    # （表セルは短文・全幅散文はカラム幅でないため、いずれも除外される）。
+    col_prose = [
+        b for b in text_blocks
+        if pw * 0.28 < (b["bbox"][2] - b["bbox"][0]) < pw * 0.56
+        and len(_block_text(b)) > 80
+    ]
+    n_left = sum(1 for b in col_prose if (b["bbox"][0] + b["bbox"][2]) / 2 < mid)
+    n_right = len(col_prose) - n_left
+    page_two_col = n_left >= 2 and n_right >= 2
 
     def is_prose(b: dict) -> bool:
         t = _block_text(b)
@@ -252,10 +265,19 @@ def _extract_text_tables(
     out: list[RawBlock] = []
     for cap in cap_blocks:
         cap_box = cap["bbox"]
-        # キャプション直下のセル候補を y 昇順に収集
+        # 2 段組対策: キャプションがカラム幅ならそのカラム内のセルのみ対象にする
+        cap_full = (cap_box[2] - cap_box[0]) > pw * 0.6
+        cap_left = (cap_box[0] + cap_box[2]) / 2 < mid
+
+        def same_col(b: dict) -> bool:
+            if cap_full or not page_two_col:
+                return True
+            return ((b["bbox"][0] + b["bbox"][2]) / 2 < mid) == cap_left
+
+        # キャプション直下のセル候補を y 昇順に収集（同一カラム限定）
         below = sorted(
             (b for b in text_blocks
-             if b is not cap and b["bbox"][1] >= cap_box[3] - 2),
+             if b is not cap and b["bbox"][1] >= cap_box[3] - 2 and same_col(b)),
             key=lambda b: b["bbox"][1],
         )
         cells: list[dict] = []
@@ -273,10 +295,7 @@ def _extract_text_tables(
             prev_y = b["bbox"][3]
 
         # 表らしさ: 十分なセル数 ＋ 複数列（distinct x が 3 以上）
-        if len(cells) < 8:
-            continue
-        col_buckets = {round(b["bbox"][0] / 20) for b in cells}
-        if len(col_buckets) < 3:
+        if len(cells) < 8 or len({round(b["bbox"][0] / 20) for b in cells}) < 3:
             continue
 
         x0 = min(b["bbox"][0] for b in cells)
@@ -379,8 +398,19 @@ def _extract_vector_figures(
     return out
 
 
-def _merge_boxes(boxes: list[tuple], gap: float) -> list[tuple]:
-    """重なる / gap 以内で近接する矩形を反復的に結合する。"""
+def _merge_boxes(boxes: list[tuple], gap: float, h_gap: float = 46.0) -> list[tuple]:
+    """重なる / gap 以内で近接する矩形を反復的に結合する。
+
+    縦方向に大きく重なる（＝同じ高さに横並びの）矩形は 1 図のサブパネルである
+    ことが多いので、その場合に限り横方向の許容ギャップを h_gap まで広げる。
+    """
+    def near(b: tuple, o: tuple) -> bool:
+        v_overlap = min(b[3], o[3]) - max(b[1], o[1])
+        v_min = min(b[3] - b[1], o[3] - o[1])
+        side_gap = h_gap if v_overlap > 0.6 * v_min else gap
+        return not (b[2] < o[0] - side_gap or b[0] > o[2] + side_gap or
+                    b[3] < o[1] - gap or b[1] > o[3] + gap)
+
     boxes = list(boxes)
     merged = True
     while merged:
@@ -388,9 +418,7 @@ def _merge_boxes(boxes: list[tuple], gap: float) -> list[tuple]:
         out: list[tuple] = []
         for b in boxes:
             for i, o in enumerate(out):
-                near = not (b[2] < o[0] - gap or b[0] > o[2] + gap or
-                            b[3] < o[1] - gap or b[1] > o[3] + gap)
-                if near:
+                if near(b, o):
                     out[i] = (min(b[0], o[0]), min(b[1], o[1]),
                               max(b[2], o[2]), max(b[3], o[3]))
                     merged = True
