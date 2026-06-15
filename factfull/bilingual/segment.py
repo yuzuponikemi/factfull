@@ -28,6 +28,12 @@ CAPTION = re.compile(r"^(Figure|Fig\.?|Table|Algorithm|Alg\.?)\s*(\d+)", re.IGNO
 # 参考文献セクション見出し
 REFERENCES_HEAD = re.compile(r"^(references|bibliography|参考文献)\s*$", re.IGNORECASE)
 ABSTRACT_HEAD = re.compile(r"^abstract\s*$", re.IGNORECASE)
+# 著者 / 所属行（タイトルページで見出し誤検出されやすい）。メール・所属語を手がかりに分離。
+AFFILIATION = re.compile(
+    r"(@|\.edu|\.com|\buniversit|\binstitut|\bgoogle\b|\bmicrosoft\b|\bdeepmind\b|"
+    r"\bresearch\b|\blaborator|\bcollege\b|\bacadem|\binc\b|\bllc\b)",
+    re.IGNORECASE,
+)
 
 # 段落の終端とみなす文字
 _TERMINAL = ".?!:;。．！？”)」】"
@@ -91,11 +97,21 @@ def _is_heading(rb: RawBlock, body_size: float, ratio: float) -> tuple[bool, int
 
 
 def _caption_label(text: str) -> str:
-    """'Figure 1: ...' → 'Figure 1'。キャプションでなければ空文字。"""
-    m = CAPTION.match(text.strip())
+    """'Figure 1: ...' → 'Figure 1'。キャプションでなければ空文字。
+
+    番号の直後に区切り（: . — -）があれば即キャプション。区切りが無い場合は
+    短い見出し的な行のみキャプションとし、'Table 2 summarizes our results …'
+    のような本文中参照（長い平文）を誤ってキャプション化しない。
+    """
+    t = text.strip()
+    m = CAPTION.match(t)
     if not m:
         return ""
-    kind = "Table" if m.group(1).lower().startswith(("table",)) else "Figure"
+    rest = t[m.end():]
+    has_sep = bool(re.match(r"\s*[:.—\-]", rest))
+    if not has_sep and len(t.split()) > 8:
+        return ""
+    kind = "Table" if m.group(1).lower().startswith("table") else "Figure"
     return f"{kind} {m.group(2)}"
 
 
@@ -192,6 +208,21 @@ def segment_blocks(
 
         # ── 見出し ──────────────────────────────────────────────────────────
         is_head, level = _is_heading(rb, body_size, heading_size_ratio)
+
+        # 著者 / 所属行: タイトルページで見出し誤検出されがちなので分離し、
+        # 翻訳対象外の段落として残す（section_path の汚染も防ぐ）。
+        if (
+            rb.page == 1
+            and (is_head or "@" in text)
+            and AFFILIATION.search(text)
+            and not SECTION_NUM.match(text)
+            and not ABSTRACT_HEAD.match(text)
+        ):
+            blocks.append(Block(
+                id="", type="paragraph", en=text, page=rb.page, skip_translate=True,
+            ))
+            continue
+
         if is_head:
             in_abstract = bool(ABSTRACT_HEAD.match(text))
             blocks.append(Block(
@@ -243,16 +274,25 @@ def _attach_figure_labels(blocks: list[Block]) -> None:
     キャプションは図の直後（表は直前/直後）に置かれることが多いので、
     同種ラベルを持つ最近傍のキャプションを探して図表ブロックへコピーする。
     """
+    used: set[int] = set()  # 1 キャプションが複数図表に多重付与されるのを防ぐ
     for i, b in enumerate(blocks):
         if b.type not in ("figure", "table") or b.label:
             continue
         want = "Table" if b.type == "table" else "Figure"
-        # 直後 → 直前の順に探索
-        for j in list(range(i + 1, min(i + 3, len(blocks)))) + \
-                 list(range(i - 1, max(i - 3, -1), -1)):
-            cap = blocks[j]
-            if cap.type == "caption" and cap.label.startswith(want):
-                b.label = cap.label
+        # 近い順（±1, ±2, …, ±5）に同一ページの同種キャプションを探す
+        for off in range(1, 6):
+            hit = False
+            for j in (i + off, i - off):
+                if not (0 <= j < len(blocks)) or j in used:
+                    continue
+                cap = blocks[j]
+                if (cap.type == "caption" and cap.label.startswith(want)
+                        and cap.page == b.page):
+                    b.label = cap.label
+                    used.add(j)
+                    hit = True
+                    break
+            if hit:
                 break
 
 

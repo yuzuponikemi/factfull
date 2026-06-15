@@ -13,7 +13,9 @@ factfull/bilingual/extract.py
 """
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
+from hashlib import md5
 from pathlib import Path
 
 # pymupdf span flags: bit 4 (=16) が太字（superscript=1, italic=2, serifed=4, ...）
@@ -68,6 +70,36 @@ def _dominant_font(text_block: dict) -> tuple[float, bool, str]:
     return dom_size, bold, text
 
 
+# ── 画像ノイズ判定 ─────────────────────────────────────────────────────────────
+
+def _keep_image(
+    w: float,
+    h: float,
+    page_area: float,
+    *,
+    min_dim: float = 40.0,
+    min_area_frac: float = 0.01,
+    max_area_frac: float = 0.92,
+    max_aspect: float = 12.0,
+) -> bool:
+    """埋め込みラスタ画像を「本物の図」として残すか判定する。
+
+    pymupdf の画像ブロックには記号・装飾・背景・罫線など本文でないラスタが
+    大量に混じる（VGG 論文で偽 figure が 134 個出た）。サイズ・面積比・
+    アスペクト比で足切りし、過抽出を防ぐ。反復画像（ロゴ等）の除去は
+    extract_structured_blocks 側でバイトハッシュにより別途行う。
+    """
+    if w < min_dim or h < min_dim:
+        return False                       # 小さすぎ（記号・インラインアイコン）
+    area = w * h
+    if page_area > 0 and not (page_area * min_area_frac <= area <= page_area * max_area_frac):
+        return False                       # ページ比 1% 未満（装飾） / 92% 超（全面背景）
+    short, long = sorted((w, h))
+    if short > 0 and long / short > max_aspect:
+        return False                       # 細長い罫線・区切り
+    return True
+
+
 # ── 読み順ソート（2 カラム対応） ────────────────────────────────────────────────
 
 def _sort_reading_order(blocks: list[RawBlock], page_width: float) -> list[RawBlock]:
@@ -75,14 +107,21 @@ def _sort_reading_order(blocks: list[RawBlock], page_width: float) -> list[RawBl
 
     明確なガター（中央付近に縦の空白）があれば 2 カラムとみなし、
     左カラムを上→下、続いて右カラムを上→下に並べる。
-    そうでなければ y 昇順（同 y は x 昇順）の単一カラム扱い。
+    全幅（図表や全幅段落）が段の途中に割り込む場合は、その全幅ブロックを
+    境界として上→下に「帯」へ分割し、各帯内で 左カラム→右カラム を並べる
+    （全幅図の前後で左右カラムが誤連結するのを防ぐ）。
+    2 カラムでなければ y 昇順（同 y は x 昇順）の単一カラム扱い。
     """
     if not blocks:
         return []
 
     mid = page_width / 2.0
-    left = [b for b in blocks if (b.bbox[0] + b.bbox[2]) / 2.0 < mid]
-    right = [b for b in blocks if (b.bbox[0] + b.bbox[2]) / 2.0 >= mid]
+
+    def cx(b: RawBlock) -> float:
+        return (b.bbox[0] + b.bbox[2]) / 2.0
+
+    left = [b for b in blocks if cx(b) < mid]
+    right = [b for b in blocks if cx(b) >= mid]
 
     # 2 カラムと判定する条件: 両カラムに十分なブロックがあり、
     # 横幅いっぱい（ガターをまたぐ）ブロックが少ない。
@@ -94,9 +133,28 @@ def _sort_reading_order(blocks: list[RawBlock], page_width: float) -> list[RawBl
     def y_then_x(bs: list[RawBlock]) -> list[RawBlock]:
         return sorted(bs, key=lambda b: (round(b.bbox[1], 1), b.bbox[0]))
 
-    if two_column:
+    if not two_column:
+        return y_then_x(blocks)
+    if not full_width:
         return y_then_x(left) + y_then_x(right)
-    return y_then_x(blocks)
+
+    # 全幅ブロックを y 昇順の境界とし、間の帯ごとに 左→右 を出力する。
+    fulls = sorted(full_width, key=lambda b: b.bbox[1])
+    full_ids = {id(b) for b in fulls}
+    cols = [b for b in blocks if id(b) not in full_ids]
+
+    def emit_band(band: list[RawBlock]) -> list[RawBlock]:
+        return y_then_x([b for b in band if cx(b) < mid]) + \
+               y_then_x([b for b in band if cx(b) >= mid])
+
+    out: list[RawBlock] = []
+    prev_y = float("-inf")
+    for f in fulls:
+        out += emit_band([b for b in cols if prev_y <= b.bbox[1] < f.bbox[1]])
+        out.append(f)
+        prev_y = f.bbox[1]
+    out += emit_band([b for b in cols if b.bbox[1] >= prev_y])
+    return out
 
 
 # ── 図表抽出 ───────────────────────────────────────────────────────────────────
@@ -158,6 +216,7 @@ def extract_structured_blocks(
     with pymupdf.open(str(pdf_path)) as doc:
         for pno, page in enumerate(doc):
             page_width = float(page.rect.width)
+            page_area = page_width * float(page.rect.height)
             d = page.get_text("dict")
 
             tables = _extract_tables(page, pno, pymupdf)
@@ -173,6 +232,8 @@ def extract_structured_blocks(
                     img = blk.get("image")
                     if not img:
                         continue
+                    if not _keep_image(bbox[2] - bbox[0], bbox[3] - bbox[1], page_area):
+                        continue            # 装飾・記号・罫線などのノイズ画像を除外
                     page_blocks.append(RawBlock(
                         kind="image",
                         page=pno + 1,
@@ -199,10 +260,28 @@ def extract_structured_blocks(
 
             all_blocks.extend(_sort_reading_order(page_blocks, page_width))
 
+    all_blocks = _drop_repeated_images(all_blocks)
+
     if assets_dir is not None:
         _dump_images(all_blocks, Path(assets_dir))
 
     return all_blocks
+
+
+def _drop_repeated_images(blocks: list[RawBlock], min_repeat: int = 3) -> list[RawBlock]:
+    """文書全体で同一バイト列が反復する画像（ロゴ・透かし等）を除去する。"""
+    counts: Counter[str] = Counter(
+        md5(b.image_bytes).hexdigest()
+        for b in blocks if b.kind == "image" and b.image_bytes
+    )
+    repeated = {h for h, c in counts.items() if c >= min_repeat}
+    if not repeated:
+        return blocks
+    return [
+        b for b in blocks
+        if not (b.kind == "image" and b.image_bytes
+                and md5(b.image_bytes).hexdigest() in repeated)
+    ]
 
 
 def _dump_images(blocks: list[RawBlock], assets_dir: Path) -> None:
