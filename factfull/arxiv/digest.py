@@ -128,7 +128,9 @@ def build_digest(
         date=date,
         papers=papers,
         digest_id=f"arxiv_digest_{date_compact}",
-        tags=result.get("tags", []),
+        # LLM が "#具現化AI" のように # 付きで返すことがある。# 始まりだと
+        # YAML がコメント扱いし値が None になってビルドが壊れるため sanitize。
+        tags=[s for t in result.get("tags", []) if (s := t.lstrip("#").strip())],
         intro_ja=result.get("intro_ja", ""),
     )
 
