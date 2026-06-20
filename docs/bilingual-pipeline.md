@@ -183,11 +183,56 @@ git push origin main   # behind なら git pull --rebase origin main 後に push
 
 ---
 
+## 5. 追記（2026-06）：理解しやすさ強化・整理
+
+### 理解補助の付加情報（enrich）
+
+`factfull/scripts/enrich_bilingual.py` が bilingual.json を後付けで拡張する
+（翻訳はやり直さない。固定プロンプトの単発 LLM 呼び出し＝`factfull/llm.py` `call()`）。
+
+- `summary_ja` = `{"tldr": str, "points": [str, …]}`：記事冒頭の要点サマリー。
+- 各 figure/table の `explanation_ja`：図表の一言解説。
+
+モデル選定の知見：**要約・図表解説とも非 thinking の `gemma4`** を使う
+（要約 `gemma4:latest` / 図表 `gemma4:e4b`）。**`qwen3.6:35b-a3b` は thinking 型で
+num_predict が小さいと思考でトークンを使い切り空応答・形式崩れが多く不安定**だった。
+gemma は ML 論文では安全チューニングが無関係（身体・性に触れる人文系は要再検討）。
+
+```bash
+python scripts/enrich_bilingual.py ~/papers/bilingual/<id>/bilingual.json
+```
+
+### homupe レンダラの読みやすさ機能（`create_paper_article.py`）
+
+- 原文（英語）は既定で折りたたみ、日本語が主役。段落ごとの「原文」ボタン＋冒頭の
+  「原文をすべて表示」一括トグル（`docs/javascripts/bilingual.js`）。
+- 記事冒頭に要点サマリー（admonition）、図表に💡一言解説。
+- 並び順は「図 → キャプション → 💡解説」。
+- 図表はクリックで拡大（`mkdocs-glightbox` プラグイン。dev グループ依存）。
+- 記事 URL は frontmatter の `slug`（ASCII）で固定。**再生成時は `--date YYYY-MM-DD` を
+  必ず指定**（既定は today なので、日付が変わると別ファイル＝旧記事を上書きできない）。
+- 一覧 `docs/papers.md` は `.papers-index.json` から自動再生成（source_id キーで upsert）。
+
+### 参考文献の扱い（既定 skip_references=True）
+
+- `segment.py`：参考文献見出しは出さず、参考文献／付録ページの図表も載せない
+  （末尾に画像がダンプされる不具合の源流対処）。
+- レンダラ側も保険として「参考文献見出し以降は出力しない」ガードを持つ
+  （既存 JSON を再翻訳せず直せるように）。
+
+### 整理（homupe）
+
+- 論文専用一覧 `docs/papers.md`（nav「論文 対訳一覧」）。
+- カテゴリ別入口 `docs/categories.md`（Material 自動生成のカテゴリページへリンク）。
+
+---
+
 ## 関連ファイル
 
 - factfull: `pipelines/bilingual.py`, `factfull/bilingual/{extract,segment,translate,pipeline,types}.py`,
-  `scripts/segment_diag.py`（回帰診断）。
+  `scripts/segment_diag.py`（回帰診断）, `scripts/enrich_bilingual.py`（要約・図表解説）。
 - homupe: `scripts/create_paper_article.py`, `docs/stylesheets/bilingual.css`,
-  `mkdocs.yml`（extra_css / attr_list / categories_allowed）。
-- 初公開記事: `homupe/docs/blog/posts/2026/06/2026-06-16-attention-is-all-you-need.md`
-  （「注意機構が全てである。」/ Attention Is All You Need）。
+  `docs/javascripts/bilingual.js`, `docs/papers.md`, `docs/categories.md`,
+  `mkdocs.yml`（extra_css / extra_javascript / attr_list / toc / glightbox / categories_allowed）。
+- 公開記事: `homupe/docs/blog/posts/2026/06/2026-06-16-*.md`（論文10本）＋
+  製作記 `…-bilingual-pipeline-devlog.md`。

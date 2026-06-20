@@ -111,6 +111,18 @@ class TestSegmentBlocks:
         refs = [b for b in blocks if b.type == "reference"]
         assert len(refs) == 1 and refs[0].skip_translate is True
 
+    def test_references_heading_and_trailing_figures_dropped(self):
+        # skip_references 時は参考文献見出しも、参考文献以降の図表も出さない
+        raw = [
+            _text("Body paragraph.", y=50),
+            _text("References", size=14.0, y=70),
+            _text("[1] Some cited work, 2020.", y=90),
+            RawBlock(kind="image", page=2, bbox=(50, 100, 200, 200), image_bytes=b"x"),
+        ]
+        blocks = segment_blocks(raw, skip_references=True)
+        assert not any(b.type == "figure" for b in blocks)
+        assert not any(b.type == "heading" and "References" in b.en for b in blocks)
+
     def test_figure_block_and_caption_label(self):
         raw = [
             RawBlock(kind="image", page=1, bbox=(50, 100, 200, 200), image_bytes=b"x"),
