@@ -178,6 +178,8 @@ def segment_blocks(
     for rb in raw:
         # ── 図 / 表 ────────────────────────────────────────────────────────
         if rb.kind in ("image", "table"):
+            if in_references and skip_references:
+                continue  # 参考文献/付録ページの図表は載せない（末尾ダンプ防止）
             if rb.kind == "image" and (rb.bbox[2] - rb.bbox[0]) < 24:
                 continue  # 装飾的な極小画像は無視
             img_seq += 1
@@ -196,7 +198,9 @@ def segment_blocks(
         if REFERENCES_HEAD.match(text):
             in_references = True
             in_abstract = False
-            blocks.append(Block(id="", type="heading", en=text, level=1, page=rb.page))
+            # skip_references のときは見出しも出さない（空の参考文献節を作らない）
+            if not skip_references:
+                blocks.append(Block(id="", type="heading", en=text, level=1, page=rb.page))
             continue
         if in_references:
             if skip_references:
