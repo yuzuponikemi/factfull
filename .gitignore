@@ -38,3 +38,4 @@ supervisor/logs/
 # Runtime databases / gbrain
 registry.json
 .gbrain-source
+.gstack/
